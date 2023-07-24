@@ -4,6 +4,8 @@ import puppeteer from 'puppeteer';
 import cheerio from 'cheerio';
 import readline from 'readline';
 
+const context_length_limit = 6000;
+
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
@@ -22,16 +24,6 @@ await (async () => {
 })();
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
-
-String.prototype.explode = function (separator, limit)
-{
-    const array = this.split(separator);
-    if (limit !== undefined && array.length >= limit)
-    {
-        array.push(array.splice(limit - 1).join(separator));
-    }
-    return array;
-};
 
 function ugly_chowder( html ) {
     html = html.replace(/<\//g, ' </');
@@ -77,19 +69,130 @@ async function send_chat_message( message, context ) {
       },
       body: JSON.stringify({
         "model": "gpt-4",
-        "messages": messages
+        "messages": messages,
+        "functions": [
+            {
+                "name": "goto_url",
+                "description": "Go to a specific URL",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The URL to go to"
+                        }
+                    }
+                },
+                "required": ["url"]
+            },
+            {
+                "name": "list_links",
+                "description": "Gets a list of the links on the current page",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "all": {
+                            "type": "boolean",
+                            "description": "Set this always to true"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "list_inputs",
+                "description": "Gets a list of the input fields on the current page",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "all": {
+                            "type": "boolean",
+                            "description": "Set this always to true"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "click_link",
+                "description": "Clicks a specific link on the page",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "link_id": {
+                            "type": "number",
+                            "description": "The ID of the link to click"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "type_text",
+                "description": "Types some text to an input field",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input_id": {
+                            "type": "number",
+                            "description": "The ID of the input to type into"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "The text to type"
+                        }
+                    }
+                },
+                "required": ["input_id", "text"]
+            },
+            {
+                "name": "send_form",
+                "description": "Sends the current form",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "current": {
+                            "type": "boolean",
+                            "description": "Set this to true always"
+                        }
+                    }
+                },
+                "required": ["current"]
+            },
+            {
+                "name": "get_content",
+                "description": "Gets the text content on the current page",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "current": {
+                            "type": "boolean",
+                            "description": "Set this to true always"
+                        }
+                    }
+                }
+            },
+            {
+                "name": "answer_user",
+                "description": "Give an answer to the user and end the navigation",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {
+                            "type": "string",
+                            "description": "The response to the user"
+                        }
+                    }
+                },
+                "required": ["answer"]
+            },
+        ],
+        "function_call": "auto"
       })
+    }).catch(function(e) {
+        console.log(e);
     });
 
     const data = await response.json();
 
-    //console.log(data);
-
-    const text = data.choices[0].message.content.trim();
-
-    //console.log("Response:" + text);
-
-    return text;
+    return data.choices[0].message;
 }
 
 async function sleep( ms ) {
@@ -103,34 +206,16 @@ async function sleep( ms ) {
 
     const page = await browser.newPage();
 
-    let message = `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You shall only answer with a command to execute, nothing else. The commands will be described later. Some of them include "get_content" (run this every time you change the page), "list_links", "list_inputs", "type_text FIELD_NUMBER TEXT_TO_TYPE" and "goto_url URL". Answer only with one command at a time. You can answer "understood" to this message. No quotes are needed in the command arguments. You can also use the command "answer_user" with an answer as a string to give an answer to the user. Use this as the final response. The code [url] will be replaced with the current URL in the answer. Always start with the front page of a website.
+    let context = [
+        {
+            "role": "system",
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website. Don't go to a sub URL directly as the URL might not work. If you encounter a Page Not Found error, try another URL. Always read the contents of the page first when going to a new URL or clicking a link.`
+        }
+    ];
 
-If the content includes "Checking if the site connection is secure", you have arrived at a Cloudflare verification page. In this case, try to use a different website.
-
-Remember that the user can not reply to you. All replies are automatic. Use only the given commands.
-
-Your answer shall be based on the content on the website.`;
+    let message = `Task: ${the_prompt}\nStart by going to a URL`;
 
     let response = await send_chat_message(
-        message,
-        []
-    );
-
-    let context = [];
-
-    context.push({
-        role: "user",
-        content: message
-    });
-
-    context.push({
-        role: "assistant",
-        content: response
-    });
-
-    message = `Task: ${the_prompt}\nWhat URL should I go to first? Please answer with "goto_url" followed by the URL. For example "goto_url https://google.com"`;
-
-    response = await send_chat_message(
         message,
         context
     );
@@ -140,10 +225,7 @@ Your answer shall be based on the content on the website.`;
         content: message
     });
 
-    context.push({
-        role: "assistant",
-        content: response
-    });
+    context.push(response);
 
     await do_next_step( page, context, response, [], [], null );
 
@@ -250,160 +332,159 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
     let message;
     let redacted_message;
 
-    if( next_step.indexOf( "goto_url" ) === 0 ) {
-        let parts = next_step.explode( "goto_url " );
-        let parts2 = parts[1].explode( " " );
-        let url = parts2[0];
+    if( next_step.hasOwnProperty( "function_call" ) ) {
+        let function_call = next_step.function_call;
+        let function_name = function_call.name;
+        let func_arguments = JSON.parse(function_call.arguments);
 
-        console.log( "Going to " + url );
+        if( function_name === "goto_url" ) {
+            let url = func_arguments.url;
 
-        await page.goto( url, {
-            waitUntil: "domcontentloaded"
-        } );
+            console.log( "Going to " + url );
 
-        await sleep(3000);
+            await page.goto( url, {
+                waitUntil: "domcontentloaded"
+            } );
 
-        url = await page.url();
+            await sleep(3000);
 
-        message = `I'm on ${url} now. What should I do next? Please answer with "get_content" to get the text content of the page, "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. Answer only with one command at a time.`
-        redacted_message = message;
-    } else if( next_step.indexOf( "list_links" ) === 0 ) {
-        links = await list_links( page );
-        let links_for_gpt = list_for_gpt( links, "Link" );
-        if( links.length ) {
-            message = `Here is the list of links on the page. Please answer with "list_inputs" if you want to see the list of the inputs instead or "click_link" followed by the number of the link, for example "click_link 5". Answer only with one command at a time.`;
-        } else {
-            message = "There are no links on the page.";
-        }
-        redacted_message = message;
-        message += "\n\n" + links_for_gpt;
-        if( links.length ) {
-            redacted_message += "\n\n<list redacted>";
-        }
-    } else if( next_step.indexOf( "list_inputs" ) === 0 ) {
-        inputs = await list_inputs( page );
-        let inputs_for_gpt = list_for_gpt( inputs, "Input" );
-        if( inputs.length ) {
-            message = `Here is the list of inputs on the page. Please answer with "list_links" if you want to see the list of the links instead or "type_text" followed by the number of the input field and the text to input. For example "type_text 5 This is the search query". Answer only with one command at a time.`;
-        } else {
-            message = `There are no inputs on the page.`;
-        }
-        redacted_message = message;
-        message += "\n\n" + inputs_for_gpt;
-        if( inputs.length ) {
-            redacted_message += "\n\n<list redacted>";
-        }
-    } else if( next_step.indexOf( "click_link" ) === 0 ) {
-        let parts = next_step.explode( "click_link ", 2 );
-        let parts2 = parts[1].explode( " ", 2 );
-        let link_id = parts2[0];
+            url = await page.url();
 
-        const link = links.find( elem => elem.number == link_id );
+            message = `I'm on ${url} now. What should I do next?`
+            redacted_message = message;
+        } else if( function_name === "list_links" ) {
+            links = await list_links( page );
+            let links_for_gpt = list_for_gpt( links, "Link" );
+            if( links.length ) {
+                message = `Here is the list of links on the page. Please answer with "list_inputs" if you want to see the list of the inputs instead or "click_link"`;
+            } else {
+                message = "There are no links on the page.";
+            }
+            redacted_message = message;
+            message += "\n\n" + links_for_gpt;
+            if( links.length ) {
+                redacted_message += "\n\n<list redacted>";
+            }
+        } else if( function_name === "list_inputs" ) {
+            inputs = await list_inputs( page );
+            let inputs_for_gpt = list_for_gpt( inputs, "Input" );
+            if( inputs.length ) {
+                message = `Here is the list of inputs on the page. Please answer with "list_links" if you want to see the list of the links instead or "type_text"`;
+            } else {
+                message = `There are no inputs on the page.`;
+            }
+            redacted_message = message;
+            message += "\n\n" + inputs_for_gpt;
+            if( inputs.length ) {
+                redacted_message += "\n\n<list redacted>";
+            }
+        } else if( function_name === "click_link" ) {
+            let link_id = func_arguments.link_id;
 
-        try {
-            element = link.element;
+            const link = links.find( elem => elem.number == link_id );
 
-            console.log( `Clicking link "${link.text}"` );
+            try {
+                element = link.element;
 
-            await element.click();
+                console.log( `Clicking link "${link.text}"` );
+
+                await element.click();
+                await page.waitForNavigation({
+                    waitUntil: "domcontentloaded"
+                });
+
+                await sleep(3000);
+
+                let url = await page.url();
+
+                message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page.`
+                redacted_message = message;
+            } catch( error ) {
+                links = await list_links( page );
+                let links_for_gpt = list_for_gpt( links, "Link" );
+
+                let link_text = link ? link.text : "";
+
+                message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also run "get_content" to get the content of the page. Here's the list of links again:`
+                redacted_message = message;
+                message += "\n\n" + links_for_gpt;
+                redacted_message += "\n\n<list redacted>";
+            }
+        } else if( function_name === "type_text" ) {
+            let element_id = func_arguments.input_id;
+            let text = func_arguments.text;
+
+            try {
+                const input = inputs.find( elem => elem.number == element_id );
+                element = input.element;
+
+                await element.type( text );
+
+                console.log( `Typing "${text}" to an input field` );
+
+                message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please answer with "send_form" or any of the given function calls.`;
+                redacted_message = message;
+            } catch( error ) {
+                message = `Sorry, but there was an error with that command. Please try another command.`
+                redacted_message = message;
+            }
+        } else if( function_name === "send_form" ) {
+            const form = await element.evaluateHandle(
+                input => input.closest('form')
+            );
+
+            await form.evaluate(form => form.submit());
             await page.waitForNavigation({
                 waitUntil: "domcontentloaded"
             });
+
+            console.log( `Submitting form` );
 
             await sleep(3000);
 
             let url = await page.url();
 
-            message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page. Answer only with one command at a time.`
+            message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page.`
             redacted_message = message;
-        } catch( error ) {
-            links = await list_links( page );
-            let links_for_gpt = list_for_gpt( links, "Link" );
+        } else if( function_name === "get_content" ) {
+            const html = await page.evaluate(() => {
+                return document.body.innerHTML;
+            });
 
-            let link_text = link ? link.text : "";
+            const pageContent = ugly_chowder( html );
 
-            message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also run "get_content" to get the content of the page. Answer only with one command at a time. Here's the list of links again:`
+            message = `Here's the current page content. Please give the next command.`;
             redacted_message = message;
-            message += "\n\n" + links_for_gpt;
-            redacted_message += "\n\n<list redacted>";
+            message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease give the next command or respond with 'answer_user' function if the user's task has been completed.";
+            redacted_message += "\n\n<content redacted>";
+        } else if( function_name === "answer_user" ) {
+            let text = func_arguments.answer;
+
+            let url = await page.url();
+            text = text.replace( "[url]", url );
+            text = text.replace( "[/url]", "" );
+
+            console.log( "\nAnswer from ChatGPT: " + text );
+
+            process.exit(0);
+        } else {
+            console.log( "unknown command!" );
+            await sleep( 10000 );
+            process.exit(1);
         }
-    } else if( next_step.indexOf( "type_text" ) === 0 ) {
-        let parts = next_step.explode( "type_text ", 2 );
-        let parts2 = parts[1].explode( " ", 2 );
-        let element_id = parts2[0];
-        let text = parts2[1];
-
-        try {
-            const input = inputs.find( elem => elem.number == element_id );
-            element = input.element;
-
-            await element.type( text );
-
-            console.log( `Typing "${text}" to an input field` );
-
-            message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please answer with "send_form" or any of the above commands. Answer only with one command at a time.`;
-            redacted_message = message;
-        } catch( error ) {
-            message = `Sorry, but there was an error with that command. Please try another command.`
-            redacted_message = message;
-        }
-    } else if( next_step.indexOf( "send_form" ) === 0 ) {
-        const form = await element.evaluateHandle(
-            input => input.closest('form')
-        );
-
-        await form.evaluate(form => form.submit());
-        await page.waitForNavigation({
-            waitUntil: "domcontentloaded"
-        });
-
-        console.log( `Submitting form` );
-
-        await sleep(3000);
-
-        let url = await page.url();
-
-        message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page. Answer only with one command at a time.`
-        redacted_message = message;
-    } else if( next_step.indexOf( "get_content" ) === 0 ) {
-        const html = await page.evaluate(() => {
-            return document.body.innerHTML;
-        });
-
-        const pageContent = ugly_chowder( html );
-
-        message = `Here's the current page content. Please give the next command.`;
-        redacted_message = message;
-        message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease give the next command or respond with 'answer_user YOUR_ANSWER_HERE' if the user's task has been completed.";
-        redacted_message += "\n\n<content redacted>";
-    } else if( next_step.indexOf( "answer_user" ) === 0 ) {
-        let parts = next_step.explode( "answer_user ", 2 );
-        let text = parts[1];
-
-        let url = await page.url();
-        text = text.replace( "[url]", url );
-        text = text.replace( "[/url]", "" );
-
-        console.log( "\nAnswer from ChatGPT: " + text );
-
-        process.exit(0);
     } else {
-        console.log( "unknown command!" );
-        sleep( 10000 );
-        process.exit(1);
+        console.log( "Response from ChatGPT: " + next_step.content.trim() );
+        process.exit(0);
     }
 
-    next_step = await send_chat_message( message.substring( 0, 5000 ), context );
+    next_step = await send_chat_message( message.substring( 0, context_length_limit ), context );
 
     context.push({
         role: "user",
         content: redacted_message
     });
 
-    context.push({
-        role: "assistant",
-        content: next_step
-    });
+    context.push(next_step);
 
     await do_next_step( page, context, next_step, links, inputs, element );
 }
