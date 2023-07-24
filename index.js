@@ -27,7 +27,6 @@ const openaiApiKey = process.env.OPENAI_API_KEY;
 
 function ugly_chowder( html ) {
     html = html.replace(/<\//g, ' </');
-    //console.log(html);
     const $ = cheerio.load( html );
 
     let simpledata = "";
@@ -54,12 +53,8 @@ async function send_chat_message( message, context ) {
         content: message
     };
 
-    //console.log( msg );
-
     let messages = [...context];
     messages.push( msg );
-
-    //console.log( "Messages", messages );
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
