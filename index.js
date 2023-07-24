@@ -6,22 +6,29 @@ import readline from 'readline';
 
 const context_length_limit = 6000;
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+async function input( text ) {
+    let the_prompt;
 
-let the_prompt;
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
 
-await (async () => {
-    return new Promise( resolve => {
-        rl.question('What do you want to do? ', (prompt) => {
-            the_prompt = prompt;
-            rl.close();
-            resolve();
-        });
-    } );
-})();
+    await (async () => {
+        return new Promise( resolve => {
+            rl.question( text, (prompt) => {
+                the_prompt = prompt;
+                rl.close();
+                resolve();
+            } );
+        } );
+    })();
+
+    return the_prompt;
+}
+
+let the_prompt = await input( "GPT: Hello! What would you like to browse today?\nYou: " )
+console.log("");
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 
@@ -249,11 +256,6 @@ async function sleep( ms ) {
     browser.close();
 })();
 
-function answer_user( message ) {
-    console.log( "ChatGPT answered: " + message );
-    process.exit(0);
-}
-
 async function list_links( page ) {
     const clickableElements = await page.$$('a, button');
 
@@ -358,7 +360,6 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             console.log( "TASKLIST:" );
             console.log( func_arguments.tasks );
             message = "OK. Continue with the fist task";
-            redacted_message = message;
         } else if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
@@ -373,7 +374,6 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             url = await page.url();
 
             message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
-            redacted_message = message;
         } else if( function_name === "list_links" ) {
             console.log( "Listing links" );
 
@@ -425,7 +425,6 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 let url = await page.url();
 
                 message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
-                redacted_message = message;
             } catch( error ) {
                 links = await list_links( page );
                 let links_for_gpt = list_for_gpt( links, "Link" );
@@ -450,10 +449,8 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 console.log( `Typing "${text}" to an input field` );
 
                 message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please call "send_form" if you want to submit the form.`;
-                redacted_message = message;
             } catch( error ) {
                 message = `Sorry, but there was an error with that command. Please try another command.`
-                redacted_message = message;
             }
         } else if( function_name === "send_form" ) {
             const form = await element.evaluateHandle(
@@ -472,7 +469,6 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             let url = await page.url();
 
             message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
-            redacted_message = message;
         } else if( function_name === "get_content" ) {
             console.log( "Getting page content" );
 
@@ -493,23 +489,21 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             text = text.replace( "[url]", url );
             text = text.replace( "[/url]", "" );
 
-            console.log( "\nAnswer from ChatGPT: " + text );
-
-            process.exit(0);
+            message = await input( "\nGPT: " + text + "\nYou: " );
+            console.log("");
         } else {
             message = "That is an unknown function. Please call another one";
-            redacted_message = message;
         }
     } else {
-        console.log( "Response from ChatGPT: " + next_step.content.trim() );
-        process.exit(0);
+        message = await input( "GPT: " + next_step.content.trim() + "\nYou: " );
+        console.log("");
     }
 
     next_step = await send_chat_message( message.substring( 0, context_length_limit ), context );
 
     context.push({
         role: "user",
-        content: redacted_message
+        content: redacted_message ? redacted_message : message
     });
 
     context.push(next_step);
