@@ -67,8 +67,26 @@ async function send_chat_message( message, context ) {
         "messages": messages,
         "functions": [
             {
+                "name": "init_tasklist",
+                "description": "Initialize a tasklist of the operations you will perform to accomplish the goal. Call this function once in the beginning.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "description": "A task"
+                            },
+                            "description": "A list of tasks needed to accomplish the given instruction"
+                        }
+                    }
+                },
+                "required": ["tasks"]
+            },
+            {
                 "name": "goto_url",
-                "description": "Go to a specific URL",
+                "description": "Goes to a specific URL",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -114,7 +132,7 @@ async function send_chat_message( message, context ) {
                     "properties": {
                         "link_id": {
                             "type": "number",
-                            "description": "The ID of the link to click"
+                            "description": "The ID number of the link to click"
                         }
                     }
                 }
@@ -127,7 +145,7 @@ async function send_chat_message( message, context ) {
                     "properties": {
                         "input_id": {
                             "type": "number",
-                            "description": "The ID of the input to type into"
+                            "description": "The ID number of the input to type into"
                         },
                         "text": {
                             "type": "string",
@@ -139,7 +157,7 @@ async function send_chat_message( message, context ) {
             },
             {
                 "name": "send_form",
-                "description": "Sends the current form",
+                "description": "Sends the form that the last filled input field belongs to",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -187,6 +205,10 @@ async function send_chat_message( message, context ) {
 
     const data = await response.json();
 
+    if( data.choices === undefined ) {
+        console.log( data );
+    }
+
     return data.choices[0].message;
 }
 
@@ -204,11 +226,11 @@ async function sleep( ms ) {
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website. Don't go to a sub URL directly as the URL might not work. If you encounter a Page Not Found error, try another URL. Always read the contents of the page first when going to a new URL or clicking a link.`
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website. Don't go to a sub URL directly as the URL might not work. If you encounter a Page Not Found error, try another URL. Always read the contents of the page with the get_contents function first when going to a new URL or clicking a link. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page.`
         }
     ];
 
-    let message = `Task: ${the_prompt}\nStart by going to a URL`;
+    let message = `Task: ${the_prompt}\nStart by creating a tasklist`;
 
     let response = await send_chat_message(
         message,
@@ -332,7 +354,12 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         let function_name = function_call.name;
         let func_arguments = JSON.parse(function_call.arguments);
 
-        if( function_name === "goto_url" ) {
+        if( function_name === "init_tasklist" ) {
+            console.log( "TASKLIST:" );
+            console.log( func_arguments.tasks );
+            message = "OK. Continue with the fist task";
+            redacted_message = message;
+        } else if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
             console.log( "Going to " + url );
@@ -345,13 +372,15 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             url = await page.url();
 
-            message = `I'm on ${url} now. What should I do next?`
+            message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
             redacted_message = message;
         } else if( function_name === "list_links" ) {
+            console.log( "Listing links" );
+
             links = await list_links( page );
             let links_for_gpt = list_for_gpt( links, "Link" );
             if( links.length ) {
-                message = `Here is the list of links on the page. Please answer with "list_inputs" if you want to see the list of the inputs instead or "click_link"`;
+                message = `Here is the list of links on the page. Please call "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.`;
             } else {
                 message = "There are no links on the page.";
             }
@@ -361,10 +390,12 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 redacted_message += "\n\n<list redacted>";
             }
         } else if( function_name === "list_inputs" ) {
+            console.log( "Listing inputs" );
+
             inputs = await list_inputs( page );
             let inputs_for_gpt = list_for_gpt( inputs, "Input" );
             if( inputs.length ) {
-                message = `Here is the list of inputs on the page. Please answer with "list_links" if you want to see the list of the links instead or "type_text"`;
+                message = `Here is the list of inputs on the page. Please call "list_links" if you want to see the list of the links instead or call "type_text" with the ID number of the input field and the text to type.`;
             } else {
                 message = `There are no inputs on the page.`;
             }
@@ -384,6 +415,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 console.log( `Clicking link "${link.text}"` );
 
                 await element.click();
+
                 await page.waitForNavigation({
                     waitUntil: "domcontentloaded"
                 });
@@ -392,7 +424,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 let url = await page.url();
 
-                message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page.`
+                message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
                 redacted_message = message;
             } catch( error ) {
                 links = await list_links( page );
@@ -400,7 +432,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 let link_text = link ? link.text : "";
 
-                message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also run "get_content" to get the content of the page. Here's the list of links again:`
+                message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page. Here's the list of links again:`
                 redacted_message = message;
                 message += "\n\n" + links_for_gpt;
                 redacted_message += "\n\n<list redacted>";
@@ -417,7 +449,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 console.log( `Typing "${text}" to an input field` );
 
-                message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please answer with "send_form" or any of the given function calls.`;
+                message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please call "send_form" if you want to submit the form.`;
                 redacted_message = message;
             } catch( error ) {
                 message = `Sorry, but there was an error with that command. Please try another command.`
@@ -428,29 +460,31 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 input => input.closest('form')
             );
 
+            console.log( `Submitting form` );
+
             await form.evaluate(form => form.submit());
             await page.waitForNavigation({
                 waitUntil: "domcontentloaded"
             });
 
-            console.log( `Submitting form` );
-
             await sleep(3000);
 
             let url = await page.url();
 
-            message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please answer with "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also run "get_content" to get the content of the page.`
+            message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
             redacted_message = message;
         } else if( function_name === "get_content" ) {
+            console.log( "Getting page content" );
+
             const html = await page.evaluate(() => {
                 return document.body.innerHTML;
             });
 
             const pageContent = ugly_chowder( html );
 
-            message = `Here's the current page content. Please give the next command.`;
+            message = `Here's the current page content. Please call the next function.`;
             redacted_message = message;
-            message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease give the next command or respond with 'answer_user' function if the user's task has been completed.";
+            message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease call the next function or the 'answer_user' function if the user's task has been completed.";
             redacted_message += "\n\n<content redacted>";
         } else if( function_name === "answer_user" ) {
             let text = func_arguments.answer;
@@ -463,9 +497,8 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             process.exit(0);
         } else {
-            console.log( "unknown command!" );
-            await sleep( 10000 );
-            process.exit(1);
+            message = "That is an unknown function. Please call another one";
+            redacted_message = message;
         }
     } else {
         console.log( "Response from ChatGPT: " + next_step.content.trim() );
