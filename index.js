@@ -68,11 +68,45 @@ if( autopilot ) {
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 
-function ugly_chowder( html ) {
+function good_html( html ) {
     html = html.replace(/<\//g, ' </');
-    const $ = cheerio.load( html );
+    let $ = cheerio.load( html );
+
+    $("script, style").remove();
+
+    let important = [
+        'main',
+        '[role="main"]',
+        '#search',
+        '.kp-header',
+    ];
+
+    // move important content to top
+    important.forEach((im) => {
+        $(im).each((i, el) => {
+            $(el).prependTo("body");
+        });
+    });
+
+    return $;
+}
+
+function ugly_chowder( html ) {
+    let $ = good_html( html );
 
     let simpledata = "";
+
+    const important = [
+        ".kp-header",
+        "#search",
+    ];
+
+    // always get textcontent of important stuff
+    important.forEach((im) => {
+        $(im).each((i, el) => {
+            simpledata += $(el).text() + "\n\n";
+        });
+    });
 
     const allowed_tags = [
         "h1",
@@ -91,11 +125,6 @@ function ugly_chowder( html ) {
         "datetime",
         "data-testid",
     ];
-
-    // move important content to top
-    $('main, [role="main"]').each((i, el) => {
-        $(el).prependTo("body")
-    });
 
     $('*').each((i, el) => {
         const tag = $(el).prop('name');
@@ -132,28 +161,6 @@ async function send_chat_message( message, context ) {
         "model": "gpt-4",
         "messages": messages,
         "functions": [
-            {
-                "name": "init_tasklist",
-                "description": "Initialize a tasklist of the operations you will perform to accomplish the goal. Call this function once in the beginning.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        },
-                        "tasks": {
-                            "type": "array",
-                            "items": {
-                                "type": "string",
-                                "description": "A task"
-                            },
-                            "description": "A list of tasks needed to accomplish the given instruction"
-                        }
-                    }
-                },
-                "required": ["reasoning", "tasks"]
-            },
             {
                 "name": "goto_url",
                 "description": "Goes to a specific URL",
@@ -316,11 +323,11 @@ async function sleep( ms ) {
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website (or a direct URL if provided). Don't go to a sub URL directly unless provided as the URL might not work. If you encounter a Page Not Found error, try another URL. Always read the contents of the page with the get_contents function first when going to a new URL or clicking a link. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page.`
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website (or a direct URL if provided). Don't go to a sub URL directly unless provided as the URL might not work. However, you are allowed to navigate directly to the Google search results page of a specific query.  If you encounter a Page Not Found error, try another URL. Always read the contents of the page with the get_contents function first when going to a new URL or clicking a link. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page.`
         }
     ];
 
-    let message = `Task: ${the_prompt}\nStart by creating a tasklist`;
+    let message = `Task: ${the_prompt}`;
 
     let response = await send_chat_message(
         message,
@@ -438,11 +445,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         let function_name = function_call.name;
         let func_arguments = JSON.parse(function_call.arguments);
 
-        if( function_name === "init_tasklist" ) {
-            print( "TASKLIST:" );
-            print( func_arguments.tasks );
-            message = "OK. Continue with the fist task";
-        } else if( function_name === "goto_url" ) {
+        if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
             print( task_prefix + "Going to " + url );
