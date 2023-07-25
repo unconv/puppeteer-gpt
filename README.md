@@ -21,7 +21,7 @@ $ export OPENAI_API_KEY=YOUR_API_KEY_HERE
 ## Usage
 
 ```console
-$ npm index.js
+$ node index.js
 GPT: Hello! What would you like to browse today?
 You: go to the unconventional coding channel on youtube
 
