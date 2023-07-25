@@ -4,7 +4,31 @@ import puppeteer from 'puppeteer';
 import cheerio from 'cheerio';
 import readline from 'readline';
 
-const context_length_limit = 6000;
+const autopilot = in_array( "--autopilot", process.argv ); // for gpt-autopilot
+
+let model = "gpt-4";
+if( in_array( "--model", process.argv ) ) {
+    model = process.argv[parseInt(process.argv.indexOf("--model"))+1];
+}
+
+let context_length_limit = 6000;
+if( in_array( "--limit", process.argv ) ) {
+    context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
+}
+
+function print( message = "" ) {
+    console.log( message );
+}
+
+function in_array( element, array ) {
+    for( let i = 0; i < array.length; i++ ) {
+        if( array[i] == element ) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 async function input( text ) {
     let the_prompt;
@@ -27,8 +51,15 @@ async function input( text ) {
     return the_prompt;
 }
 
-let the_prompt = await input( "GPT: Hello! What would you like to browse today?\nYou: " )
-console.log("");
+print( "Using model: " + model + "\n" )
+
+let the_prompt;
+if( autopilot ) {
+    the_prompt = await input( "<!_PROMPT_!>\n" );
+} else {
+    the_prompt = await input( "GPT: Hello! What would you like to browse today?\nYou: " )
+    print();
+}
 
 const openaiApiKey = process.env.OPENAI_API_KEY;
 
@@ -38,14 +69,32 @@ function ugly_chowder( html ) {
 
     let simpledata = "";
 
+    const allowed_tags = [
+        "h1",
+        "h2",
+        "h3",
+        "p",
+        "time",
+        "article",
+        "a",
+        "ul",
+        "ol",
+        "li",
+    ];
+
+    const allowed_attrs = [
+        "datetime",
+        "data-testid",
+    ];
+
     $('*').each((i, el) => {
         const tag = $(el).prop('name');
 
-        if( tag === "h1" || tag === "h2" || tag === "h3" || tag === "p" || tag === "time" || tag === "article" || tag === "a" || tag === "ul" || tag === "ol" || tag === "li" ) {
+        if( in_array( tag, allowed_tags ) ) {
             const text = $(el).text().replace(/[\s\n]+/g, ' ') + " ";
             const attrs = $(el).attr();
             const attrString = Object.keys(attrs).map(key => {
-                return (key === "datetime" || key === "data-testid") ? ` ${key}="${attrs[key]}"` : '';
+                return in_array( key, allowed_attrs ) ? ` ${key}="${attrs[key]}"` : '';
             }).join('');
             simpledata += ` <${tag}${attrString}>${text}`;
         }
@@ -79,6 +128,10 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
+                        },
                         "tasks": {
                             "type": "array",
                             "items": {
@@ -89,7 +142,7 @@ async function send_chat_message( message, context ) {
                         }
                     }
                 },
-                "required": ["tasks"]
+                "required": ["reasoning", "tasks"]
             },
             {
                 "name": "goto_url",
@@ -97,13 +150,17 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
+                        },
                         "url": {
                             "type": "string",
-                            "description": "The URL to go to"
+                            "description": "The URL to go to (including protocol)"
                         }
                     }
                 },
-                "required": ["url"]
+                "required": ["reasoning", "url"]
             },
             {
                 "name": "list_links",
@@ -111,12 +168,13 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "all": {
-                            "type": "boolean",
-                            "description": "Set this always to true"
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
                         }
                     }
-                }
+                },
+                "required": ["reasoning"]
             },
             {
                 "name": "list_inputs",
@@ -124,12 +182,13 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "all": {
-                            "type": "boolean",
-                            "description": "Set this always to true"
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
                         }
                     }
-                }
+                },
+                "required": ["reasoning"]
             },
             {
                 "name": "click_link",
@@ -137,12 +196,17 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
+                        },
                         "link_id": {
                             "type": "number",
                             "description": "The ID number of the link to click"
                         }
                     }
-                }
+                },
+                "required": ["reasoning", "link_id"]
             },
             {
                 "name": "type_text",
@@ -150,6 +214,10 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
+                        },
                         "input_id": {
                             "type": "number",
                             "description": "The ID number of the input to type into"
@@ -160,7 +228,7 @@ async function send_chat_message( message, context ) {
                         }
                     }
                 },
-                "required": ["input_id", "text"]
+                "required": ["reasoning", "input_id", "text"]
             },
             {
                 "name": "send_form",
@@ -168,13 +236,13 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "current": {
-                            "type": "boolean",
-                            "description": "Set this to true always"
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
                         }
                     }
                 },
-                "required": ["current"]
+                "required": ["reasoning"]
             },
             {
                 "name": "get_content",
@@ -182,12 +250,13 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "current": {
-                            "type": "boolean",
-                            "description": "Set this to true always"
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function."
                         }
                     }
-                }
+                },
+                "required": ["reasoning"]
             },
             {
                 "name": "answer_user",
@@ -207,13 +276,17 @@ async function send_chat_message( message, context ) {
         "function_call": "auto"
       })
     }).catch(function(e) {
-        console.log(e);
+        print(e);
     });
 
     const data = await response.json();
 
     if( data.choices === undefined ) {
-        console.log( data );
+        print( data );
+    }
+
+    if( autopilot ) {
+        print( "<!_TOKENS_!>" + data.usage.prompt_tokens + " " + data.usage.completion_tokens + " " + data.usage.total_tokens )
     }
 
     return data.choices[0].message;
@@ -281,7 +354,7 @@ async function list_links( page ) {
 
             if( ! links.find( elem => elem.text == text ) ) {
                 let link = {
-                    number: number,
+                    link_id: number,
                     element: element,
                     text: text
                 }
@@ -324,7 +397,7 @@ async function list_inputs( page ) {
 
             if( ! inputs.find( elem => elem.text == text ) ) {
                 let input = {
-                    number: number,
+                    input_id: number,
                     element: element,
                     text: text
                 }
@@ -338,18 +411,17 @@ async function list_inputs( page ) {
 }
 
 function list_for_gpt( list, what ) {
-    let string_list = "";
-
-    for (const element of list) {
-        string_list += `${what} ${element.number}: ${element.text}\n`;
-    }
-
-    return string_list;
+    return JSON.stringify( list );
 }
 
 async function do_next_step( page, context, next_step, links, inputs, element ) {
     let message;
     let redacted_message;
+
+    let task_prefix = "";
+    if( autopilot ) {
+        task_prefix = "<!_TASK_!>";
+    }
 
     if( next_step.hasOwnProperty( "function_call" ) ) {
         let function_call = next_step.function_call;
@@ -357,13 +429,13 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         let func_arguments = JSON.parse(function_call.arguments);
 
         if( function_name === "init_tasklist" ) {
-            console.log( "TASKLIST:" );
-            console.log( func_arguments.tasks );
+            print( "TASKLIST:" );
+            print( func_arguments.tasks );
             message = "OK. Continue with the fist task";
         } else if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
-            console.log( "Going to " + url );
+            print( task_prefix + "Going to " + url );
 
             await page.goto( url, {
                 waitUntil: "domcontentloaded"
@@ -375,7 +447,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
         } else if( function_name === "list_links" ) {
-            console.log( "Listing links" );
+            print( task_prefix + "Listing links" );
 
             links = await list_links( page );
             let links_for_gpt = list_for_gpt( links, "Link" );
@@ -390,7 +462,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 redacted_message += "\n\n<list redacted>";
             }
         } else if( function_name === "list_inputs" ) {
-            console.log( "Listing inputs" );
+            print( task_prefix + "Listing inputs" );
 
             inputs = await list_inputs( page );
             let inputs_for_gpt = list_for_gpt( inputs, "Input" );
@@ -407,12 +479,12 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         } else if( function_name === "click_link" ) {
             let link_id = func_arguments.link_id;
 
-            const link = links.find( elem => elem.number == link_id );
+            const link = links.find( elem => elem.link_id == link_id );
 
             try {
                 element = link.element;
 
-                console.log( `Clicking link "${link.text}"` );
+                print( task_prefix + `Clicking link "${link.text}"` );
 
                 await element.click();
 
@@ -441,12 +513,12 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             let text = func_arguments.text;
 
             try {
-                const input = inputs.find( elem => elem.number == element_id );
+                const input = inputs.find( elem => elem.input_id == element_id );
                 element = input.element;
 
                 await element.type( text );
 
-                console.log( `Typing "${text}" to an input field` );
+                print( task_prefix + `Typing "${JSON.stringify(text)}" to an input field` );
 
                 message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please call "send_form" if you want to submit the form.`;
             } catch( error ) {
@@ -457,7 +529,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 input => input.closest('form')
             );
 
-            console.log( `Submitting form` );
+            print( task_prefix + `Submitting form` );
 
             await form.evaluate(form => form.submit());
             await page.waitForNavigation({
@@ -470,7 +542,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
         } else if( function_name === "get_content" ) {
-            console.log( "Getting page content" );
+            print( task_prefix + "Getting page content" );
 
             const html = await page.evaluate(() => {
                 return document.body.innerHTML;
@@ -489,14 +561,23 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             text = text.replace( "[url]", url );
             text = text.replace( "[/url]", "" );
 
-            message = await input( "\nGPT: " + text + "\nYou: " );
-            console.log("");
+            if( autopilot ) {
+                message = await input( "<!_RESPONSE_!>" + JSON.stringify(text) + "\n" );
+            } else{
+                message = await input( "\nGPT: " + text + "\nYou: " );
+            }
+
+            print();
         } else {
             message = "That is an unknown function. Please call another one";
         }
     } else {
-        message = await input( "GPT: " + next_step.content.trim() + "\nYou: " );
-        console.log("");
+        if( autopilot ) {
+            message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_step.content.trim()) + "\n" );
+        } else{
+            message = await input( "GPT: " + next_step.content.trim() + "\nYou: " );
+            print();
+        }
     }
 
     next_step = await send_chat_message( message.substring( 0, context_length_limit ), context );

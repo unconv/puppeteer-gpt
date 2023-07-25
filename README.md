@@ -35,3 +35,8 @@ Clicking link "Unconventional Coding"
 GPT: Successfully navigated to the Unconventional Coding channel on YouTube.
 You:
 ```
+
+## Command line arguments
+
+`--limit [LIMIT]`: Limit the maximum length of web page content to be passed to ChatGPT  
+`--model [MODEL]`: Set the model to use (e.g. `gpt-4` or `gpt-3.5-turbo`)
