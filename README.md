@@ -4,6 +4,8 @@ This script uses the ChatGPT API and Puppeteer to control Google Chrome in order
 
 It is currently not very capable, but for simple tasks it works, especially when instructed properly.
 
+**NOTE: Browsing with GPT-4 can be quite expensive, since website source code has lots of tokens!**
+
 ## Installation
 
 The code requires `puppeteer`, `cheerio` and `readline` NPM packages.
