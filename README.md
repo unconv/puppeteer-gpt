@@ -38,5 +38,6 @@ You:
 
 ## Command line arguments
 
+`--headless false`: Disable headless mode (show Chrome GUI)  
 `--limit [LIMIT]`: Limit the maximum length of web page content to be passed to ChatGPT  
 `--model [MODEL]`: Set the model to use (e.g. `gpt-4` or `gpt-3.5-turbo`)

@@ -16,6 +16,11 @@ if( in_array( "--limit", process.argv ) ) {
     context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
 }
 
+let headless = true;
+if( in_array( "--headless", process.argv ) ) {
+    headless = (process.argv[parseInt(process.argv.indexOf("--headless"))+1] ?? "true") !== "false";
+}
+
 function print( message = "" ) {
     console.log( message );
 }
@@ -303,7 +308,7 @@ async function sleep( ms ) {
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: false
+        headless: headless ? "new" : false
     });
 
     const page = await browser.newPage();
