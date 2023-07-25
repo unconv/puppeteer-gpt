@@ -6,7 +6,7 @@ import readline from 'readline';
 
 const autopilot = in_array( "--autopilot", process.argv ); // for gpt-autopilot
 
-let model = "gpt-4";
+let model = "gpt-3.5-turbo-16k";
 if( in_array( "--model", process.argv ) ) {
     model = process.argv[parseInt(process.argv.indexOf("--model"))+1];
 }
