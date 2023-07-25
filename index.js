@@ -87,6 +87,11 @@ function ugly_chowder( html ) {
         "data-testid",
     ];
 
+    // move important content to top
+    $('main, [role="main"]').each((i, el) => {
+        $(el).prependTo("body")
+    });
+
     $('*').each((i, el) => {
         const tag = $(el).prop('name');
 
