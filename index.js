@@ -211,14 +211,10 @@ function redact_messages( messages ) {
     let redacted_messages = [];
 
     messages.forEach( (message) => {
-        let msg = {
-            "role": message.role,
-            "content": message.redacted ?? message.content ?? "",
-        };
-        if( message.name ) {
-            msg.name = message.name;
-        }
-        redacted_messages.push(msg);
+        let msg = JSON.parse( JSON.stringify( message ) );
+        msg.content = msg.redacted ?? msg.content ?? "";
+        delete msg.redacted;
+        redacted_messages.push( msg );
     } );
 
     return redacted_messages;
