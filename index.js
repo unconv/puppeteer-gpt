@@ -239,7 +239,7 @@ async function send_chat_message( message, context ) {
         "Authorization": `Bearer ${openaiApiKey}`
       },
       body: JSON.stringify({
-        "model": "gpt-4",
+        "model": model,
         "messages": redact_messages( messages ),
         "functions": [
             {
