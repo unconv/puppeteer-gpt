@@ -211,23 +211,22 @@ function redact_messages( messages ) {
     let redacted_messages = [];
 
     messages.forEach( (message) => {
-        redacted_messages.push({
+        let msg = {
             "role": message.role,
             "content": message.redacted ?? message.content ?? "",
-        });
+        };
+        if( message.name ) {
+            msg.name = message.name;
+        }
+        redacted_messages.push(msg);
     } );
 
     return redacted_messages;
 }
 
 async function send_chat_message( message, context ) {
-    let msg = {
-        role: "user",
-        content: message
-    };
-
     let messages = [...context];
-    messages.push( msg );
+    messages.push( message );
 
     if( debug ) {
         fs.writeFileSync( "context.json", JSON.stringify( messages, null, 2 ) );
@@ -439,16 +438,17 @@ let request_count = 0;
     ];
 
     let message = `Task: ${the_prompt}`;
+    let msg = {
+        role: "user",
+        content: message
+    }
 
     let response = await send_chat_message(
-        message,
+        msg,
         context
     );
 
-    context.push({
-        role: "user",
-        content: message
-    });
+    context.push(msg);
 
     context.push(response);
 
@@ -504,7 +504,7 @@ async function list_links( page ) {
 }
 
 async function list_inputs( page ) {
-    const clickableElements = await page.$$('input[type=text], input[type=email], input[type=password], textarea');
+    const clickableElements = await page.$$('input, textarea');
 
     let inputs = [];
     let number = 0;
@@ -512,6 +512,7 @@ async function list_inputs( page ) {
     for (const element of clickableElements) {
         number++;
 
+        const type = await element.evaluate( (e) => e.type );
         const name = await element.evaluate( (e) => e.name );
         const role = await element.evaluate( (e) => e.role );
         const placeholder = await element.evaluate( (e) => e.placeholder );
@@ -519,8 +520,11 @@ async function list_inputs( page ) {
 
         let text = "";
 
-        if( name ) {
+        if( name && type != "hidden" ) {
             text += name;
+            if( type ) {
+                text += " (type: " + type + ")";
+            }
             if( role ) {
                 text += " (role: " + role + ")";
             }
@@ -582,6 +586,7 @@ async function wait_for_navigation() {
 
 async function do_next_step( page, context, next_step, links, inputs, element ) {
     let message;
+    let msg;
     let redacted_message;
 
     let task_prefix = "";
@@ -592,7 +597,17 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
     if( next_step.hasOwnProperty( "function_call" ) ) {
         let function_call = next_step.function_call;
         let function_name = function_call.name;
-        let func_arguments = JSON.parse(function_call.arguments);
+        let func_arguments;
+
+        try {
+            func_arguments = JSON.parse(function_call.arguments);
+        } catch( e ) {
+            if( function_name === "answer_user" ) {
+                func_arguments = {
+                    "answer": function_call.arguments
+                }
+            }
+        }
 
         if( function_name === "goto_url" ) {
             let url = func_arguments.url;
@@ -680,7 +695,6 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                     if( error instanceof TimeoutError ) {
                         message = "NOTICE: The click did not cause a navigation. If it was a download link, the file has been downloaded to the default Chrome download location.";
                     } else {
-                        print(error);
                         links = await list_links( page );
                         let links_for_gpt = list_for_gpt( links, "link" );
 
@@ -765,27 +779,41 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         } else {
             message = "That is an unknown function. Please call another one";
         }
+
+        message = message.substring( 0, context_length_limit );
+        msg = {
+            "role": "function",
+            "name": function_name,
+            "content": message,
+        }
     } else {
         print_current_cost();
 
-        if( autopilot ) {
-            message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_step.content.trim()) + "\n" );
-        } else{
-            message = await input( "GPT: " + next_step.content.trim() + "\nYou: " );
-            print();
+        let next_content = next_step.content.trim();
+
+        if( next_content == "" ) {
+            message = "Please continue the task or call answer_user"
+        } else {
+            if( autopilot ) {
+                message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_content) + "\n" );
+            } else{
+                message = await input( "GPT: " + next_content + "\nYou: " );
+                print();
+            }
+        }
+
+        msg = {
+            "role": "user",
+            "content": message,
         }
     }
 
-    message = message.substring( 0, context_length_limit );
-    next_step = await send_chat_message( message, context );
+    next_step = await send_chat_message( msg, context );
 
-    context.push({
-        role: "user",
-        content: message,
-        redacted: redacted_message,
-    });
+    msg.redacted = redacted_message;
 
-    context.push(next_step);
+    context.push( msg );
+    context.push( next_step );
 
     if( debug ) {
         fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
