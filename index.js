@@ -525,8 +525,6 @@ async function list_inputs( page ) {
     let number = 0;
 
     for (const element of clickableElements) {
-        number++;
-
         const type = await element.evaluate( (e) => e.type );
         const name = await element.evaluate( (e) => e.name );
         const role = await element.evaluate( (e) => e.role );
@@ -535,30 +533,22 @@ async function list_inputs( page ) {
 
         let text = "";
 
-        if( name && type != "hidden" ) {
+        if( name && type != "hidden" && type != "file" ) {
+            number++;
             text += name;
-            if( type ) {
-                text += " (type: " + type + ")";
-            }
-            if( role ) {
-                text += " (role: " + role + ")";
-            }
-            if( placeholder ) {
-                text += " (placeholder: " + placeholder + ")";
-            }
-            if( title ) {
-                text += " (title: " + title + ")";
+
+            let input = {
+                text: text,
+                type: type,
+                id: number,
+                element: element,
             }
 
-            if( ! inputs.find( elem => elem.text == text ) ) {
-                let input = {
-                    id: number,
-                    element: element,
-                    text: text
-                }
+            if( role ) { input.role = role; }
+            if( placeholder ) { input.placeholder = placeholder; }
+            if( title ) { input.title = title; }
 
-                inputs.push( input );
-            }
+            inputs.push( input );
         }
     }
 
@@ -737,38 +727,49 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             try {
                 const input = inputs.find( elem => elem.id == element_id );
+                const name = await input.element.evaluate( (e) => e.name );
                 element = input.element;
 
                 await element.type( text );
 
-                print( task_prefix + `Typing "${JSON.stringify(text)}" to an input field` );
+                let sanitized = text.replace("\n", " ");
+                print( task_prefix + `Typing "${sanitized}" to ${name}` );
 
-                message = `OK. I typed "${text}" to the input box ${element_id}. What should I do next? Please call "send_form" if you want to submit the form.`;
+                message = `OK. I typed "${text}" to the input box "${name}". If this was not the field you meant to type to, please fix it. What should I do next? Please call "send_form" if you want to submit the form.`;
             } catch( error ) {
+                if( debug ) {
+                    print(error);
+                }
                 message = `Sorry, but there was an error with that command. Please try another command.`
             }
         } else if( function_name === "send_form" ) {
-            let navigation = "";
-
-            const form = await element.evaluateHandle(
-                input => input.closest('form')
-            );
-
             print( task_prefix + `Submitting form` );
 
-            await form.evaluate(form => form.submit());
+            try {
+                const form = await element.evaluateHandle(
+                    input => input.closest('form')
+                );
 
-            let navigated = "No navigation occured.";
-            if( await wait_for_navigation() ) {
-                await sleep( 3000 );
-                navigated = "";
+                await form.evaluate(form => form.submit());
+
+                let navigated = "No navigation occured.";
+                if( await wait_for_navigation() ) {
+                    await sleep( 3000 );
+                    navigated = "";
+                }
+
+                let url = await page.url();
+
+                links = false;
+
+                message = `OK. I sent the form. I'm on ${url} now. ${navigated} What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
+            } catch( error ) {
+                if( debug ) {
+                    print( error );
+                }
+                print( task_prefix + `Error submitting form` );
+                message = "There was an error submitting the form.";
             }
-
-            let url = await page.url();
-
-            links = false;
-
-            message = `OK. I sent the form. I'm on ${url} now. ${navigated} What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
         } else if( function_name === "get_content" ) {
             links = false;
 
@@ -795,7 +796,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             if( autopilot ) {
                 message = await input( "<!_RESPONSE_!>" + JSON.stringify(text) + "\n" );
-            } else{
+            } else {
                 message = await input( "\nGPT: " + text + "\nYou: " );
             }
 
@@ -808,22 +809,25 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         msg = {
             "role": "function",
             "name": function_name,
-            "content": message,
+            "content": JSON.stringify({
+                "status": "OK",
+                "message": message,
+            }),
         }
     } else {
         print_current_cost();
 
         let next_content = next_step.content.trim();
 
-        if( next_content == "" ) {
-            message = "Please continue the task or call answer_user"
+        if( next_content === "") {
+            next_content = "<empty response>";
+        }
+
+        if( autopilot ) {
+            message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_content) + "\n" );
         } else {
-            if( autopilot ) {
-                message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_content) + "\n" );
-            } else{
-                message = await input( "GPT: " + next_content + "\nYou: " );
-                print();
-            }
+            message = await input( "GPT: " + next_content + "\nYou: " );
+            print();
         }
 
         msg = {
