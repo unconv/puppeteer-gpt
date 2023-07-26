@@ -258,17 +258,17 @@ async function send_chat_message( message, context ) {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        },
                         "url": {
                             "type": "string",
                             "description": "The URL to go to (including protocol)"
-                        }
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Explanation on why you would like to run this function and what exactly you will do."
+                        },
                     }
                 },
-                "required": ["reasoning", "url"]
+                "required": ["url", "reasoning"]
             },
             {
                 "name": "list_links",
@@ -391,6 +391,11 @@ async function send_chat_message( message, context ) {
 
     if( data.choices === undefined ) {
         print( data );
+    }
+
+    // fix JSON arguments
+    if( data.choices[0].message.hasOwnProperty("function_call") ) {
+        data.choices[0].message.function_call.arguments = data.choices[0].message.function_call.arguments.replace('"\n  "', '",\n  "');
     }
 
     token_usage.completion_tokens += data.usage.completion_tokens;
