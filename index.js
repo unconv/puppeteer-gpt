@@ -239,6 +239,20 @@ async function send_chat_message( message, context ) {
         "messages": redact_messages( messages ),
         "functions": [
             {
+                "name": "read_file",
+                "description": "Read the contents of a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {
+                            "type": "string",
+                            "description": "The filename to read, e.g. file.txt or path/to/file.txt"
+                        }
+                    }
+                },
+                "required": ["filename"]
+            },
+            {
                 "name": "goto_url",
                 "description": "Goes to a specific URL",
                 "parameters": {
@@ -605,7 +619,16 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             }
         }
 
-        if( function_name === "goto_url" ) {
+        if( function_name === "read_file" ) {
+            let filename = func_arguments.filename;
+
+            print( task_prefix + "Reading file " + filename );
+
+            let file_data = fs.readFileSync( filename, 'utf-8' );
+            file_data = file_data.substring( 0, context_length_limit );
+
+            message = file_data;
+        } else if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
             print( task_prefix + "Going to " + url );
