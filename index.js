@@ -23,6 +23,58 @@ if( in_array( "--headless", process.argv ) ) {
     headless = (process.argv[parseInt(process.argv.indexOf("--headless"))+1] ?? "true") !== "false";
 }
 
+let token_usage = {
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+};
+
+function get_token_price( model, direction ) {
+    let token_price_input = 0.0
+    let token_price_output = 0.0
+
+    if( model.indexOf("gpt-4-32k") === 0 ) {
+        token_price_input = 0.06 / 1000
+        token_price_output = 0.12 / 1000
+    } else if( model.indexOf("gpt-4") === 0 ) {
+        token_price_input = 0.03 / 1000
+        token_price_output = 0.06 / 1000
+    } else if( model.indexOf("gpt-3.5-turbo-16k") === 0 ) {
+        token_price_input = 0.003 / 1000
+        token_price_output = 0.004 / 1000
+    } else if( model.indexOf("gpt-3.5-turbo") === 0 ) {
+        token_price_input = 0.0015 / 1000
+        token_price_output = 0.002 / 1000
+    }
+
+    if( direction == "input" ) {
+        return token_price_input
+    } else {
+        return token_price_output
+    }
+}
+
+function token_cost( prompt_tokens, completion_tokens, model ) {
+    let prompt_price = get_token_price( model, "input" );
+    let completion_price = get_token_price( model, "output" );
+
+    return prompt_tokens * prompt_price + completion_tokens * completion_price;
+}
+
+function round( number, decimals ) {
+    return number.toFixed( decimals );
+}
+
+function print_current_cost() {
+    let cost = token_cost(
+        token_usage.prompt_tokens,
+        token_usage.completion_tokens,
+        model,
+    );
+
+    print( "Current cost: " + round( cost, 2 ) + " USD (" + token_usage.total_tokens + " tokens)" );
+}
+
 function print( message = "" ) {
     console.log( message );
 }
@@ -321,6 +373,20 @@ async function send_chat_message( message, context ) {
         print( data );
     }
 
+    token_usage.completion_tokens += data.usage.completion_tokens;
+    token_usage.prompt_tokens += data.usage.prompt_tokens;
+    token_usage.total_tokens += data.usage.total_tokens;
+
+    let cost = token_cost(
+        data.usage.prompt_tokens,
+        data.usage.completion_tokens,
+        model,
+    );
+
+    if( cost > 0.09 ) {
+        print( "Cost: +" + round( cost, 2 ) + " USD (+" + data.usage.total_tokens + " tokens)" );
+    }
+
     if( autopilot ) {
         print( "<!_TOKENS_!>" + data.usage.prompt_tokens + " " + data.usage.completion_tokens + " " + data.usage.total_tokens )
     }
@@ -451,7 +517,37 @@ async function list_inputs( page ) {
 }
 
 function list_for_gpt( list, what ) {
-    return JSON.stringify( list );
+    let formatted = JSON.parse( JSON.stringify( list ) );
+
+    for( const element of formatted ) {
+        delete element.element;
+    }
+
+    return JSON.stringify( formatted, null, 2 );
+}
+
+function check_download_error( error ) {
+    if( error instanceof Error && error.message.startsWith('net::ERR_ABORTED') ) {
+        return "NOTICE: The connection was aborted. If you clicked on a download link, the file has been downloaded to the default Chrome downloads location.";
+    } else if( debug ) {
+        print( error );
+    }
+
+    return null;
+}
+
+async function wait_for_navigation() {
+    if( page_loaded === true ) {
+        return false;
+    }
+
+    let wait_time = 0;
+    while( page_loaded === false && wait_time < navigation_timeout ) {
+        await sleep( 500 );
+        wait_time += 500;
+    }
+
+    return true;
 }
 
 async function do_next_step( page, context, next_step, links, inputs, element ) {
@@ -597,6 +693,8 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             text = text.replace( "[url]", url );
             text = text.replace( "[/url]", "" );
 
+            print_current_cost();
+
             if( autopilot ) {
                 message = await input( "<!_RESPONSE_!>" + JSON.stringify(text) + "\n" );
             } else{
@@ -608,6 +706,8 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             message = "That is an unknown function. Please call another one";
         }
     } else {
+        print_current_cost();
+
         if( autopilot ) {
             message = await input( "<!_RESPONSE_!>" + JSON.stringify(next_step.content.trim()) + "\n" );
         } else{
