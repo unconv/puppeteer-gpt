@@ -131,6 +131,7 @@ function good_html( html ) {
     let important = [
         'main',
         '[role="main"]',
+        '#bodyContent',
         '#search',
         '.kp-header',
     ];
