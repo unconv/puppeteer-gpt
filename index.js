@@ -1,7 +1,7 @@
 "use strict";
 
 import fs from 'fs';
-import puppeteer from 'puppeteer';
+import puppeteer, { TimeoutError } from 'puppeteer';
 import cheerio from 'cheerio';
 import readline from 'readline';
 
@@ -16,6 +16,16 @@ if( in_array( "--model", process.argv ) ) {
 let context_length_limit = 6000;
 if( in_array( "--limit", process.argv ) ) {
     context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
+}
+
+let navigation_timeout = 15000;
+if( in_array( "--timeout", process.argv ) ) {
+    navigation_timeout = parseInt( process.argv[parseInt(process.argv.indexOf("--timeout"))+1] );
+}
+
+let wait_until = "networkidle0";
+if( in_array( "--waituntil", process.argv ) ) {
+    wait_until = process.argv[parseInt(process.argv.indexOf("--waituntil"))+1];
 }
 
 let headless = true;
@@ -281,7 +291,7 @@ async function send_chat_message( message, context ) {
             },
             {
                 "name": "click_link",
-                "description": "Clicks a specific link on the page",
+                "description": "Clicks a specific link on the page (list_links must be called first)",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -299,7 +309,7 @@ async function send_chat_message( message, context ) {
             },
             {
                 "name": "type_text",
-                "description": "Types some text to an input field",
+                "description": "Types some text to an input field (list_inputs must be called first)",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -399,6 +409,9 @@ async function sleep( ms ) {
     return new Promise( (resolve) => setTimeout( resolve, ms ) );
 }
 
+let page_loaded = false;
+let request_count = 0;
+
 (async () => {
     const browser = await puppeteer.launch({
         headless: headless ? "new" : false
@@ -406,10 +419,22 @@ async function sleep( ms ) {
 
     const page = await browser.newPage();
 
+    page.on( 'request', () => {
+        request_count++;
+    } );
+
+    page.on( 'load', () => {
+        page_loaded = true;
+    } );
+
+    page.on( 'framenavigated', () => {
+        page_loaded = false;
+    } );
+
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You shall only answer with function calls. Start by navigating to the front page of a website (or a direct URL if provided). Don't go to a sub URL directly unless provided as the URL might not work. However, you are allowed to navigate directly to the Google search results page of a specific query.  If you encounter a Page Not Found error, try another URL. Always read the contents of the page with the get_contents function first when going to a new URL or clicking a link. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page.`
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them. If you use Google, note that the links in the results will point to URLs outside Google (don't click on search suggestions etc.). Avoid direct URLs that might have expired or be invalid.`
         }
     ];
 
@@ -440,6 +465,7 @@ async function list_links( page ) {
     const clickableElements = await page.$$('a, button');
 
     let links = [];
+    let nav_links = [];
     let number = 0;
 
     for (const element of clickableElements) {
@@ -449,29 +475,32 @@ async function list_links( page ) {
         let textContent = await element.evaluate( (e) => e.textContent );
         textContent = textContent.replace(/\n/g, '').trim();
 
-        let text = "";
+        let duplicate_link = links.find( elem => {
+            elem.text == textContent && href && elem.href == href
+        } );
 
-        if( textContent ) {
-            text += textContent;
-            if( href ) {
-                text += " (" + href + ")";
-            } else {
-                text += " (button)";
+        if( textContent && ! duplicate_link ) {
+            let link = {
+                id: number,
+                element: element,
+                text: textContent,
+                url: href,
             }
 
-            if( ! links.find( elem => elem.text == text ) ) {
-                let link = {
-                    link_id: number,
-                    element: element,
-                    text: text
-                }
+            const is_in_nav = await element.evaluate( (node) => {
+                const closest_nav = node.closest('nav');
+                return closest_nav !== null;
+            } );
 
+            if( is_in_nav ) {
+                nav_links.push( link );
+            } else {
                 links.push( link );
             }
         }
     }
 
-    return links;
+    return [...links, ...nav_links];
 }
 
 async function list_inputs( page ) {
@@ -504,7 +533,7 @@ async function list_inputs( page ) {
 
             if( ! inputs.find( elem => elem.text == text ) ) {
                 let input = {
-                    input_id: number,
+                    id: number,
                     element: element,
                     text: text
                 }
@@ -570,22 +599,31 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             print( task_prefix + "Going to " + url );
 
-            await page.goto( url, {
-                waitUntil: "domcontentloaded"
-            } );
+            try {
+                await page.goto( url, {
+                    waitUntil: wait_until
+                } );
 
-            await sleep(3000);
+                await sleep( 3000 );
 
-            url = await page.url();
+                url = await page.url();
 
-            message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
+                links = false;
+
+                message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
+            } catch( error ) {
+                message = check_download_error( error );
+                message = message ?? "There was an error going to the URL";
+            }
         } else if( function_name === "list_links" ) {
             print( task_prefix + "Listing links" );
+
+            let url = await page.url();
 
             links = await list_links( page );
             let links_for_gpt = list_for_gpt( links, "Link" );
             if( links.length ) {
-                message = `Here is the list of links on the page. Please call "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.`;
+                message = `Here is the list of links on the page. Please call "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
             } else {
                 message = "There are no links on the page.";
             }
@@ -598,7 +636,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             print( task_prefix + "Listing inputs" );
 
             inputs = await list_inputs( page );
-            let inputs_for_gpt = list_for_gpt( inputs, "Input" );
+            let inputs_for_gpt = list_for_gpt( inputs, "input" );
             if( inputs.length ) {
                 message = `Here is the list of inputs on the page. Please call "list_links" if you want to see the list of the links instead or call "type_text" with the ID number of the input field and the text to type.`;
             } else {
@@ -612,41 +650,55 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         } else if( function_name === "click_link" ) {
             let link_id = func_arguments.link_id;
 
-            const link = links.find( elem => elem.link_id == link_id );
+            if( links === false ) {
+                message = "ERROR: You must first list the links to get the IDs";
+            } else {
+                const link = links.find( elem => elem.id == link_id );
 
-            try {
-                element = link.element;
+                try {
+                    element = link.element;
 
-                print( task_prefix + `Clicking link "${link.text}"` );
+                    print( task_prefix + `Clicking link "${link.text}"` );
 
-                await element.click();
+                    request_count = 0;
+                    await element.click();
+                    await sleep( 300 );
 
-                await page.waitForNavigation({
-                    waitUntil: "domcontentloaded"
-                });
+                    if( await wait_for_navigation() ) {
+                        await sleep( 3000 );
+                        let url = await page.url();
+                        message = `I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
+                    } else {
+                        message = "Link successfully clicked!";
+                        if( request_count > 0 ) {
+                            message += " If this was a download link, the download has been started to the Chrome default downloads folder.";
+                        }
+                    }
 
-                await sleep(3000);
+                    links = false;
+                } catch( error ) {
+                    if( error instanceof TimeoutError ) {
+                        message = "NOTICE: The click did not cause a navigation. If it was a download link, the file has been downloaded to the default Chrome download location.";
+                    } else {
+                        print(error);
+                        links = await list_links( page );
+                        let links_for_gpt = list_for_gpt( links, "link" );
 
-                let url = await page.url();
+                        let link_text = link ? link.text : "";
 
-                message = `OK. I clicked the link. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
-            } catch( error ) {
-                links = await list_links( page );
-                let links_for_gpt = list_for_gpt( links, "Link" );
-
-                let link_text = link ? link.text : "";
-
-                message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page. Here's the list of links again:`
-                redacted_message = message;
-                message += "\n\n" + links_for_gpt;
-                redacted_message += "\n\n<list redacted>";
+                        message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page. Here's the list of links again:`
+                        redacted_message = message;
+                        message += "\n\n" + links_for_gpt;
+                        redacted_message += "\n\n<list redacted>";
+                    }
+                }
             }
         } else if( function_name === "type_text" ) {
             let element_id = func_arguments.input_id;
             let text = func_arguments.text;
 
             try {
-                const input = inputs.find( elem => elem.input_id == element_id );
+                const input = inputs.find( elem => elem.id == element_id );
                 element = input.element;
 
                 await element.type( text );
@@ -658,6 +710,8 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 message = `Sorry, but there was an error with that command. Please try another command.`
             }
         } else if( function_name === "send_form" ) {
+            let navigation = "";
+
             const form = await element.evaluateHandle(
                 input => input.closest('form')
             );
@@ -665,16 +719,21 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             print( task_prefix + `Submitting form` );
 
             await form.evaluate(form => form.submit());
-            await page.waitForNavigation({
-                waitUntil: "domcontentloaded"
-            });
 
-            await sleep(3000);
+            let navigated = "No navigation occured.";
+            if( await wait_for_navigation() ) {
+                await sleep( 3000 );
+                navigated = "";
+            }
 
             let url = await page.url();
 
-            message = `OK. I sent the form. I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
+            links = false;
+
+            message = `OK. I sent the form. I'm on ${url} now. ${navigated} What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
         } else if( function_name === "get_content" ) {
+            links = false;
+
             print( task_prefix + "Getting page content" );
 
             const html = await page.evaluate(() => {
@@ -683,7 +742,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             const pageContent = ugly_chowder( html );
 
-            message = `Here's the current page content. Please call the next function.`;
+            message = `Here's the current page content. Please call "list_links" or "list_inputs" to get their ID's or call the next function.`;
             redacted_message = message;
             message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease call the next function or the 'answer_user' function if the user's task has been completed.";
             redacted_message += "\n\n<content redacted>";
