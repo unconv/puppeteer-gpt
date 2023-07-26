@@ -1,9 +1,11 @@
 "use strict";
 
+import fs from 'fs';
 import puppeteer from 'puppeteer';
 import cheerio from 'cheerio';
 import readline from 'readline';
 
+const debug = in_array( "--debug", process.argv );
 const autopilot = in_array( "--autopilot", process.argv ); // for gpt-autopilot
 
 let model = "gpt-3.5-turbo-16k";
@@ -142,6 +144,19 @@ function ugly_chowder( html ) {
     return simpledata;
 };
 
+function redact_messages( messages ) {
+    let redacted_messages = [];
+
+    messages.forEach( (message) => {
+        redacted_messages.push({
+            "role": message.role,
+            "content": message.redacted ?? message.content ?? "",
+        });
+    } );
+
+    return redacted_messages;
+}
+
 async function send_chat_message( message, context ) {
     let msg = {
         role: "user",
@@ -151,6 +166,10 @@ async function send_chat_message( message, context ) {
     let messages = [...context];
     messages.push( msg );
 
+    if( debug ) {
+        fs.writeFileSync( "context.json", JSON.stringify( messages, null, 2 ) );
+    }
+
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -159,7 +178,7 @@ async function send_chat_message( message, context ) {
       },
       body: JSON.stringify({
         "model": "gpt-4",
-        "messages": messages,
+        "messages": redact_messages( messages ),
         "functions": [
             {
                 "name": "goto_url",
@@ -340,6 +359,10 @@ async function sleep( ms ) {
     });
 
     context.push(response);
+
+    if( debug ) {
+        fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
+    }
 
     await do_next_step( page, context, response, [], [], null );
 
@@ -593,14 +616,20 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         }
     }
 
-    next_step = await send_chat_message( message.substring( 0, context_length_limit ), context );
+    message = message.substring( 0, context_length_limit );
+    next_step = await send_chat_message( message, context );
 
     context.push({
         role: "user",
-        content: redacted_message ? redacted_message : message
+        content: message,
+        redacted: redacted_message,
     });
 
     context.push(next_step);
+
+    if( debug ) {
+        fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
+    }
 
     await do_next_step( page, context, next_step, links, inputs, element );
 }
