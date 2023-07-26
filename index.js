@@ -691,7 +691,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                     request_count = 0;
                     await element.click();
-                    await sleep( 300 );
+                    await sleep( 2000 );
 
                     if( await wait_for_navigation() ) {
                         await sleep( 3000 );
