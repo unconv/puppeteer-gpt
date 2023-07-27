@@ -18,7 +18,7 @@ if( in_array( "--limit", process.argv ) ) {
     context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
 }
 
-let navigation_timeout = 15000;
+let navigation_timeout = 5000;
 if( in_array( "--timeout", process.argv ) ) {
     navigation_timeout = parseInt( process.argv[parseInt(process.argv.indexOf("--timeout"))+1] );
 }
@@ -234,12 +234,200 @@ function redact_messages( messages ) {
     return redacted_messages;
 }
 
-async function send_chat_message( message, context ) {
+async function send_chat_message(
+    message,
+    context,
+    function_call = "auto",
+    functions = null
+) {
     let messages = [...context];
     messages.push( message );
 
     if( debug ) {
         fs.writeFileSync( "context.json", JSON.stringify( messages, null, 2 ) );
+    }
+
+    let definitions = [
+        {
+            "name": "make_plan",
+            "description": "Create a plan to accomplish the given task",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {
+                        "type": "string",
+                        "description": "The step by step plan on how you will navigate the internet and what you will do"
+                    }
+                }
+            },
+            "required": ["plan"]
+        },
+        {
+            "name": "read_file",
+            "description": "Read the contents of a file",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "The filename to read, e.g. file.txt or path/to/file.txt"
+                    }
+                }
+            },
+            "required": ["filename"]
+        },
+        {
+            "name": "goto_url",
+            "description": "Goes to a specific URL",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to go to (including protocol)"
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function and what exactly you will do."
+                    },
+                }
+            },
+            "required": ["url", "reasoning"]
+        },
+        {
+            "name": "list_links",
+            "description": "Gets a list of the links on the current page",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    }
+                }
+            },
+            "required": ["reasoning"]
+        },
+        {
+            "name": "list_inputs",
+            "description": "Gets a list of the input fields on the current page",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    }
+                }
+            },
+            "required": ["reasoning"]
+        },
+        {
+            "name": "click_link",
+            "description": "Clicks a specific link on the page (list_links must be called first)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    },
+                    "link_id": {
+                        "type": "number",
+                        "description": "The ID number of the link to click"
+                    }
+                }
+            },
+            "required": ["reasoning", "link_id"]
+        },
+        {
+            "name": "type_text",
+            "description": "Types some text to an input field (list_inputs must be called first)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    },
+                    "input_id": {
+                        "type": "number",
+                        "description": "The ID number of the input to type into"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The text to type"
+                    }
+                }
+            },
+            "required": ["reasoning", "input_id", "text"]
+        },
+        {
+            "name": "send_form",
+            "description": "Sends the form that the last filled input field belongs to",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    }
+                }
+            },
+            "required": ["reasoning"]
+        },
+        {
+            "name": "get_content",
+            "description": "Gets the text content on the current page",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explanation on why you would like to run this function."
+                    }
+                }
+            },
+            "required": ["reasoning"]
+        },
+        {
+            "name": "answer_user",
+            "description": "Give an answer to the user and end the navigation. Use when the given task has been completed",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Explain your chain of thought for figuring out the answer"
+                    },
+                    "answer": {
+                        "type": "string",
+                        "description": "The response to the user"
+                    }
+                }
+            },
+            "required": ["answer"]
+        },
+        {
+            "name": "list_relevant_parts",
+            "description": "List relevant parts of the page content",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "A summary of the relevant information"
+                    }
+                }
+            },
+            "required": ["summary"]
+        },
+    ];
+
+    if( functions !== null ) {
+        definitions = definitions.filter( definition => {
+            return in_array( definition.name, functions );
+        } );
     }
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -251,151 +439,8 @@ async function send_chat_message( message, context ) {
       body: JSON.stringify({
         "model": model,
         "messages": redact_messages( messages ),
-        "functions": [
-            {
-                "name": "read_file",
-                "description": "Read the contents of a file",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "filename": {
-                            "type": "string",
-                            "description": "The filename to read, e.g. file.txt or path/to/file.txt"
-                        }
-                    }
-                },
-                "required": ["filename"]
-            },
-            {
-                "name": "goto_url",
-                "description": "Goes to a specific URL",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {
-                            "type": "string",
-                            "description": "The URL to go to (including protocol)"
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function and what exactly you will do."
-                        },
-                    }
-                },
-                "required": ["url", "reasoning"]
-            },
-            {
-                "name": "list_links",
-                "description": "Gets a list of the links on the current page",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        }
-                    }
-                },
-                "required": ["reasoning"]
-            },
-            {
-                "name": "list_inputs",
-                "description": "Gets a list of the input fields on the current page",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        }
-                    }
-                },
-                "required": ["reasoning"]
-            },
-            {
-                "name": "click_link",
-                "description": "Clicks a specific link on the page (list_links must be called first)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        },
-                        "link_id": {
-                            "type": "number",
-                            "description": "The ID number of the link to click"
-                        }
-                    }
-                },
-                "required": ["reasoning", "link_id"]
-            },
-            {
-                "name": "type_text",
-                "description": "Types some text to an input field (list_inputs must be called first)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        },
-                        "input_id": {
-                            "type": "number",
-                            "description": "The ID number of the input to type into"
-                        },
-                        "text": {
-                            "type": "string",
-                            "description": "The text to type"
-                        }
-                    }
-                },
-                "required": ["reasoning", "input_id", "text"]
-            },
-            {
-                "name": "send_form",
-                "description": "Sends the form that the last filled input field belongs to",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        }
-                    }
-                },
-                "required": ["reasoning"]
-            },
-            {
-                "name": "get_content",
-                "description": "Gets the text content on the current page",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Explanation on why you would like to run this function."
-                        }
-                    }
-                },
-                "required": ["reasoning"]
-            },
-            {
-                "name": "answer_user",
-                "description": "Give an answer to the user and end the navigation",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "answer": {
-                            "type": "string",
-                            "description": "The response to the user"
-                        }
-                    }
-                },
-                "required": ["answer"]
-            },
-        ],
-        "function_call": "auto"
+        "functions": definitions,
+        "function_call": function_call ?? "auto"
       })
     }).catch(function(e) {
         print(e);
@@ -434,6 +479,9 @@ async function send_chat_message( message, context ) {
 }
 
 async function sleep( ms ) {
+    if( debug ) {
+        print( "Sleeping " + ms + " ms..." );
+    }
     return new Promise( (resolve) => setTimeout( resolve, ms ) );
 }
 
@@ -452,21 +500,33 @@ let request_count = 0;
     } );
 
     page.on( 'load', () => {
+        if( debug ) {
+            print( "Page loaded" );
+        }
         page_loaded = true;
     } );
 
-    page.on( 'framenavigated', () => {
-        page_loaded = false;
+    page.on( 'framenavigated', async frame => {
+        if( frame === page.mainFrame() ) {
+            if( frame._lifecycleEvents.length < 5 ) {
+                if( page_loaded && debug ) {
+                    print( "Loading page..." );
+                }
+                page_loaded = false;
+            } else {
+                await sleep( 500 );
+            }
+        }
     } );
 
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them. If you use Google, note that the links in the results will point to URLs outside Google (don't click on search suggestions etc.). Avoid direct URLs that might have expired or be invalid.`
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them. If you use Google, note that the links in the results will point to URLs outside Google (don't click on search suggestions etc.). Don't use direct URLs that have an ID, because they might be expired.`
         }
     ];
 
-    let message = `Task: ${the_prompt}`;
+    let message = `Task: ${the_prompt}.\n\nStart by going to the front page of a website, unless you need to do a search, in which case you can navigate directly to the search query if the URL is well known. Make a plan first.`;
     let msg = {
         role: "user",
         content: message
@@ -474,7 +534,11 @@ let request_count = 0;
 
     let response = await send_chat_message(
         msg,
-        context
+        context,
+        {
+            "name": "make_plan",
+            "arguments": ["plan"],
+        }
     );
 
     context.push(msg);
@@ -491,11 +555,16 @@ let request_count = 0;
 })();
 
 async function list_links( page ) {
-    const clickableElements = await page.$$('a, button');
+    const clickableElements = await page.$$('a, button, [role="tab"]');
 
     let links = [];
     let nav_links = [];
+    let important_links = [];
     let number = 0;
+
+    let important = [
+        '#search',
+    ];
 
     for (const element of clickableElements) {
         number++;
@@ -521,7 +590,22 @@ async function list_links( page ) {
                 return closest_nav !== null;
             } );
 
-            if( is_in_nav ) {
+            let is_important = false;
+
+            for( const selector of important ) {
+                const in_selector = await element.evaluate( (node, selector) => {
+                    const closest_element = node.closest( selector );
+                    return closest_element !== null;
+                }, selector );
+
+                if( in_selector ) {
+                    is_important = true;
+                }
+            };
+
+            if( is_important ) {
+                important_links.push( link );
+            } else if( is_in_nav ) {
                 nav_links.push( link );
             } else {
                 links.push( link );
@@ -529,7 +613,7 @@ async function list_links( page ) {
         }
     }
 
-    return [...links, ...nav_links];
+    return [...important_links, ...links, ...nav_links];
 }
 
 async function list_inputs( page ) {
@@ -590,6 +674,8 @@ function check_download_error( error ) {
 }
 
 async function wait_for_navigation() {
+    await sleep( 500 );
+
     if( page_loaded === true ) {
         return false;
     }
@@ -628,7 +714,11 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             }
         }
 
-        if( function_name === "read_file" ) {
+        if( function_name === "list_relevant_parts" ) {
+            message = "OK. Continue by answering the user or by other functions";
+        } else if( function_name === "make_plan" ) {
+            message = "OK. Please continue according to the plan";
+        } else if( function_name === "read_file" ) {
             let filename = func_arguments.filename;
 
             print( task_prefix + "Reading file " + filename );
@@ -647,7 +737,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                     waitUntil: wait_until
                 } );
 
-                await sleep( 3000 );
+                await sleep( 2000 );
 
                 url = await page.url();
 
@@ -666,7 +756,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             links = await list_links( page );
             let links_for_gpt = list_for_gpt( links, "Link" );
             if( links.length ) {
-                message = `Here is the list of links on the page. Please call "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
+                message = `Here is the list of links on the page. Please call "list_relevant_parts" to parse the parts relevant to the original question from the link texts or "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
             } else {
                 message = "There are no links on the page.";
             }
@@ -708,7 +798,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                     await sleep( 2000 );
 
                     if( await wait_for_navigation() ) {
-                        await sleep( 3000 );
+                        await sleep( 2000 );
                         let url = await page.url();
                         message = `I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
                     } else {
@@ -789,15 +879,19 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             print( task_prefix + "Getting page content" );
 
+            const title = await page.evaluate(() => {
+                return document.title;
+            });
+
             const html = await page.evaluate(() => {
                 return document.body.innerHTML;
             });
 
-            const pageContent = ugly_chowder( html );
+            const page_content = ugly_chowder( html );
 
             message = `Here's the current page content. Please call "list_links" or "list_inputs" to get their ID's or call the next function.`;
             redacted_message = message;
-            message += "\n\n## CONTENT START ##\n" + pageContent + "\n## CONTENT END ##\n\nPlease call the next function or the 'answer_user' function if the user's task has been completed.";
+            message += `\n\n## CONTENT START ##\nTitle: ${title}\n\n${page_content}\n## CONTENT END ##\n\nIn your next response, list all parts of the above content that are relevant to the original prompt:\n\n${the_prompt}`;
             redacted_message += "\n\n<content redacted>";
         } else if( function_name === "answer_user" ) {
             let text = func_arguments.answer;
