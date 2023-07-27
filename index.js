@@ -209,13 +209,27 @@ function ugly_chowder( html ) {
 
 function redact_messages( messages ) {
     let redacted_messages = [];
+    let current_url = messages[messages.length-1].url;
 
-    messages.forEach( (message) => {
+    messages.forEach( message => {
         let msg = JSON.parse( JSON.stringify( message ) );
-        msg.content = msg.redacted ?? msg.content ?? "";
+
+        if( msg.url != current_url ) {
+            msg.content = msg.redacted ?? msg.content ?? "";
+        }
+
         delete msg.redacted;
+        delete msg.url;
+
         redacted_messages.push( msg );
     } );
+
+    if( debug ) {
+        fs.writeFileSync(
+            "context_redacted.json",
+            JSON.stringify( redacted_messages, null, 2 )
+        );
+    }
 
     return redacted_messages;
 }
@@ -714,7 +728,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                         let link_text = link ? link.text : "";
 
-                        message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page. Here's the list of links again:`
+                        message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page.`
                         redacted_message = message;
                         message += "\n\n" + links_for_gpt;
                         redacted_message += "\n\n<list redacted>";
@@ -735,7 +749,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                 let sanitized = text.replace("\n", " ");
                 print( task_prefix + `Typing "${sanitized}" to ${name}` );
 
-                message = `OK. I typed "${text}" to the input box "${name}". If this was not the field you meant to type to, please fix it. What should I do next? Please call "send_form" if you want to submit the form.`;
+                message = `OK. I typed "${text}" to the input box "${name}". What should I do next? Please call "send_form" if you want to submit the form.`;
             } catch( error ) {
                 if( debug ) {
                     print(error);
@@ -836,9 +850,10 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         }
     }
 
-    next_step = await send_chat_message( msg, context );
-
     msg.redacted = redacted_message;
+    msg.url = await page.url();
+
+    next_step = await send_chat_message( msg, context );
 
     context.push( msg );
     context.push( next_step );
