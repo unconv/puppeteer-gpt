@@ -522,11 +522,11 @@ let request_count = 0;
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them. If you use Google, note that the links in the results will point to URLs outside Google (don't click on search suggestions etc.). Don't use direct URLs that have an ID, because they might be expired.`
+            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them.`
         }
     ];
 
-    let message = `Task: ${the_prompt}.\n\nStart by going to the front page of a website, unless you need to do a search, in which case you can navigate directly to the search query if the URL is well known. Make a plan first.`;
+    let message = `Task: ${the_prompt}. Start by navigating to a website`;
     let msg = {
         role: "user",
         content: message
@@ -743,7 +743,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 links = false;
 
-                message = `I'm on ${url} now. What should I do next? Call list_links to get a list of the links on the page. Call list_inputs to list all the input fields on the page. Call get_content to get the text content of the page.`
+                message = `Navigated to ${url}`
             } catch( error ) {
                 message = check_download_error( error );
                 message = message ?? "There was an error going to the URL";
@@ -756,7 +756,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             links = await list_links( page );
             let links_for_gpt = list_for_gpt( links, "Link" );
             if( links.length ) {
-                message = `Here is the list of links on the page. Please call "list_relevant_parts" to parse the parts relevant to the original question from the link texts or "list_inputs" if you want to see the list of the inputs instead or call "click_link" with the ID number of a link to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
+                message = `Here is the list of links on the page. Call "click_link" with the ID number of a link if you want to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
             } else {
                 message = "There are no links on the page.";
             }
@@ -771,7 +771,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             inputs = await list_inputs( page );
             let inputs_for_gpt = list_for_gpt( inputs, "input" );
             if( inputs.length ) {
-                message = `Here is the list of inputs on the page. Please call "list_links" if you want to see the list of the links instead or call "type_text" with the ID number of the input field and the text to type.`;
+                message = `Here is the list of inputs on the page. Please call "type_text" with the ID number of the input field and the text to type, if you want to fill in the form.`;
             } else {
                 message = `There are no inputs on the page.`;
             }
@@ -800,7 +800,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
                     if( await wait_for_navigation() ) {
                         await sleep( 2000 );
                         let url = await page.url();
-                        message = `I'm on ${url} now. What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
+                        message = `Navigated to ${url}`
                     } else {
                         message = "Link successfully clicked!";
                         if( request_count > 0 ) {
@@ -866,7 +866,7 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 links = false;
 
-                message = `OK. I sent the form. I'm on ${url} now. ${navigated} What should I do next? Please call "list_links" to list all the links on the page or "list_inputs" to list all the input fields on the page. You can also call "get_content" to get the content of the page.`
+                message = `OK. I sent the form. I'm on ${url} now. ${navigated}`
             } catch( error ) {
                 if( debug ) {
                     print( error );
@@ -889,16 +889,12 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
             const page_content = ugly_chowder( html );
 
-            message = `Here's the current page content. Please call "list_links" or "list_inputs" to get their ID's or call the next function.`;
+            message = `Here's the current page content.`;
             redacted_message = message;
             message += `\n\n## CONTENT START ##\nTitle: ${title}\n\n${page_content}\n## CONTENT END ##\n\nIn your next response, list all parts of the above content that are relevant to the original prompt:\n\n${the_prompt}`;
             redacted_message += "\n\n<content redacted>";
         } else if( function_name === "answer_user" ) {
             let text = func_arguments.answer;
-
-            let url = await page.url();
-            text = text.replace( "[url]", url );
-            text = text.replace( "[/url]", "" );
 
             print_current_cost();
 
