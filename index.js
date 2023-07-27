@@ -13,7 +13,7 @@ if( in_array( "--model", process.argv ) ) {
     model = process.argv[parseInt(process.argv.indexOf("--model"))+1];
 }
 
-let context_length_limit = 6000;
+let context_length_limit = 15000;
 if( in_array( "--limit", process.argv ) ) {
     context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
 }
@@ -478,8 +478,8 @@ async function send_chat_message(
     return data.choices[0].message;
 }
 
-async function sleep( ms ) {
-    if( debug ) {
+async function sleep( ms, print_debug = true ) {
+    if( debug && print_debug ) {
         print( "Sleeping " + ms + " ms..." );
     }
     return new Promise( (resolve) => setTimeout( resolve, ms ) );
@@ -490,7 +490,11 @@ let request_count = 0;
 
 (async () => {
     const browser = await puppeteer.launch({
-        headless: headless ? "new" : false
+        headless: headless ? "new" : false,
+        defaultViewport: {
+            width: 1920,
+            height: 1200,
+        }
     });
 
     const page = await browser.newPage();
@@ -554,7 +558,161 @@ let request_count = 0;
     browser.close();
 })();
 
+async function get_tabbable_elements( page, selector = "*" ) {
+    let tabbable_elements = [];
+    let id = 0;
+
+    tabbable_elements.push(
+        await get_next_tab( page, ++id, selector )
+    );
+
+    await page.evaluate(() => {
+        document.activeElement.classList.add( "pgpt-first-element" );
+    });
+
+    tabbable_elements.push(
+        await get_next_tab( page, ++id, selector )
+    );
+
+    const limit = 200;
+    let elements_found = 0;
+
+    while( elements_found < limit ) {
+        elements_found++;
+
+        const first_element = await page.evaluate(() => {
+            return document.activeElement.classList.contains( "pgpt-first-element" );
+        });
+
+        if( first_element ) {
+            break
+        }
+
+        const next_tab = await get_next_tab( page, ++id, selector );
+
+        if( next_tab !== false ) {
+            tabbable_elements.push( next_tab );
+        } else {
+            id--;
+        }
+    }
+
+    return tabbable_elements.filter( (element) => {
+        return element;
+    } );
+}
+
+async function get_next_tab( page, id, selector = "*" ) {
+    await page.keyboard.press("Tab");
+
+    await sleep( 5, false );
+
+    let element = await page.evaluateHandle(() => {
+        return document.activeElement;
+    })
+
+    let obj = await page.evaluate(async (id, selector) => {
+        if( ! document.activeElement.matches( selector ) ) {
+            return false;
+        }
+
+        const tagName = document.activeElement.tagName;
+
+        if( tagName === "BODY" ) {
+            return false;
+        }
+
+        let textContent = document.activeElement.textContent.replace(/\s+/g, ' ').trim();
+
+        if( textContent === "" && ! document.activeElement.matches( "select, input, textarea" ) ) {
+            return false;
+        }
+
+        let role = document.activeElement.role;
+        let placeholder = document.activeElement.placeholder;
+        let title = document.activeElement.title;
+        let type = document.activeElement.type;
+        let href = document.activeElement.href;
+        let value = document.activeElement.value;
+
+        if( href && href.length > 42 ) {
+            href = href.substring( 0, 42 ) + "[..]";
+        }
+
+        if( placeholder && placeholder.length > 42 ) {
+            placeholder = placeholder.substring( 0, 42 ) + "[..]";
+        }
+
+        if( title && title.length > 42 ) {
+            title = title.substring( 0, 42 ) + "[..]";
+        }
+
+        if( textContent && textContent.length > 200 ) {
+            textContent = textContent.substring( 0, 200 ) + "[..]";
+        }
+
+        let tag = `<${tagName}`;
+
+        if( href ) { tag += ` href="${href}"` };
+        if( type ) { tag += ` type="${type}"` };
+        if( placeholder ) { tag += ` placeholder="${placeholder}"` };
+        if( title ) { tag += ` title="${title}"` };
+        if( role ) { tag += ` role="${role}"` };
+        if( value ) { tag += ` value="${value}"` };
+
+        tag += `>`;
+
+        let obj = {
+            tag: tag,
+            id: id,
+        };
+
+        if( textContent ) {
+            obj.text = textContent;
+        }
+
+        return obj;
+    }, id, selector);
+
+    if( ! obj ) {
+        return false;
+    }
+
+    obj.element = element;
+
+    await page.keyboard.down("Shift");
+    await page.keyboard.press("Tab");
+    await page.keyboard.up("Shift");
+
+    const visible = await page.evaluate( async (element) => {
+        const styles = window.getComputedStyle( element );
+        const visibility = styles.getPropertyValue( 'visibility' );
+        const display = styles.getPropertyValue( 'display' );
+        const clip = styles.getPropertyValue( 'clip' );
+        const rect = element.getBoundingClientRect();
+
+        return (
+            visibility !== 'hidden' &&
+            display !== 'none' &&
+            rect.width != 0 &&
+            rect.height != 0 &&
+            clip !== "rect(1px, 1px, 1px, 1px)" &&
+            clip !== "rect(0px, 0px, 0px, 0px)"
+        );
+    }, element );
+
+    await page.keyboard.press("Tab");
+
+    if( ! visible ) {
+        return false;
+    }
+
+    return obj;
+}
+
 async function list_links( page ) {
+    return get_tabbable_elements( page, 'a, button, [role="tab"]' );
+
     const clickableElements = await page.$$('a, button, [role="tab"]');
 
     let links = [];
@@ -617,6 +775,8 @@ async function list_links( page ) {
 }
 
 async function list_inputs( page ) {
+    return get_tabbable_elements( page, 'select, input, textarea' );
+
     const clickableElements = await page.$$('input, textarea');
 
     let inputs = [];
