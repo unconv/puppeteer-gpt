@@ -342,7 +342,7 @@ async function send_chat_message(
                     }
                 }
             },
-            "required": ["form_data"]
+            "required": ["form_data", "submit"]
         },
         {
             "name": "answer_user",
@@ -955,7 +955,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                 }
             }
 
-            if( func_arguments.submit ) {
+            if( func_arguments.submit !== false ) {
                 print( task_prefix + `Submitting form` );
 
                 try {
