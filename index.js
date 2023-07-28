@@ -909,6 +909,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
             links_and_inputs = await get_tabbable_elements( page );
         } else if( function_name === "type_text" ) {
             let form_data = func_arguments.form_data;
+            let prev_input;
 
             for( let data of form_data ) {
                 let element_id = data.pgpt_id;
@@ -918,6 +919,10 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
 
                 try {
                     element = await page.$(".pgpt-element"+element_id);
+
+                    if( ! prev_input ) {
+                        prev_input = element;
+                    }
 
                     const name = await element.evaluate( el => {
                         return el.getAttribute( "name" );
@@ -936,6 +941,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                     if( tagName === "BUTTON" || type === "submit" || type === "button" ) {
                         func_arguments.submit = true;
                     } else {
+                        prev_input = element;
                         await element.type( text );
                         let sanitized = text.replace("\n", " ");
                         print( task_prefix + `Typing "${sanitized}" to ${name}` );
@@ -953,7 +959,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                 print( task_prefix + `Submitting form` );
 
                 try {
-                    const form = await element.evaluateHandle(
+                    const form = await prev_input.evaluateHandle(
                         input => input.closest('form')
                     );
 
