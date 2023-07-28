@@ -569,10 +569,6 @@ async function get_tabbable_elements( page, selector = "*" ) {
     let skipped = [];
     let id = 0;
 
-    await page.evaluate(() => {
-        window.scrollBy(0, 1000);
-    });
-
     let elements = await page.$$('input:not([type=hidden]):not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"]), select:not([disabled]), a[href]:not([href="javascript:void(0)"]):not([href="#"])');
 
     let limit = 400;
