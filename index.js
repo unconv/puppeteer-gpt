@@ -18,12 +18,12 @@ if( in_array( "--limit", process.argv ) ) {
     context_length_limit = process.argv[parseInt(process.argv.indexOf("--limit"))+1];
 }
 
-let navigation_timeout = 5000;
+let navigation_timeout = 10000;
 if( in_array( "--timeout", process.argv ) ) {
     navigation_timeout = parseInt( process.argv[parseInt(process.argv.indexOf("--timeout"))+1] );
 }
 
-let wait_until = "networkidle0";
+let wait_until = "load";
 if( in_array( "--waituntil", process.argv ) ) {
     wait_until = process.argv[parseInt(process.argv.indexOf("--waituntil"))+1];
 }
@@ -256,7 +256,7 @@ async function send_chat_message(
     let definitions = [
         {
             "name": "make_plan",
-            "description": "Create a plan to accomplish the given task. Summarize what the user's task is in a step by step manner. How would you browse the internet to accomplish the task.",
+            "description": "Create a plan to accomplish the given task. Summarize what the user's task is in a step by step manner. How would you browse the internet to accomplish the task. Start with 'I will'",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -298,17 +298,21 @@ async function send_chat_message(
         },
         {
             "name": "click_link",
-            "description": "Clicks a specific link on the page",
+            "description": "Clicks a link with the given pgpt_id on the page. Note that pgpt_id is required and you must use the corresponding pgpt-id attribute from the page content. Add the text of the link to confirm that you are clicking the right link.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "The text on the link you want to click"
+                    },
                     "pgpt_id": {
                         "type": "number",
                         "description": "The pgpt-id of the link to click (from the page content)"
                     }
                 }
             },
-            "required": ["pgpt_id"]
+            "required": ["reason", "pgpt_id"]
         },
         {
             "name": "type_text",
@@ -427,8 +431,13 @@ let page_loaded = false;
 let request_count = 0;
 let request_block = false;
 let response_count = 0;
+let the_page;
 
-(async () => {
+async function start_browser() {
+    if( the_page ) {
+        return the_page;
+    }
+
     const browser = await puppeteer.launch({
         headless: headless ? "new" : false,
     });
@@ -436,7 +445,7 @@ let response_count = 0;
     const page = await browser.newPage();
 
     await page.setViewport( {
-        width: 1920,
+        width: 1200,
         height: 1200,
         deviceScaleFactor: 1,
     } );
@@ -489,6 +498,12 @@ let response_count = 0;
         }
     } );
 
+    the_page = page;
+
+    return the_page;
+}
+
+(async () => {
     let context = [
         {
             "role": "system",
@@ -510,14 +525,31 @@ When you have executed all the operations needed for the original task, call ans
         content: message
     }
 
-    let response = await send_chat_message(
-        msg,
-        context,
-        {
-            "name": "make_plan",
-            "arguments": ["plan"],
+    let accept_plan = "n";
+    let response;
+
+    while( accept_plan !== "y" ) {
+        response = await send_chat_message(
+            msg,
+            context,
+            {
+                "name": "make_plan",
+                "arguments": ["plan"],
+            }
+        );
+
+        let args = JSON.parse( response.function_call.arguments );
+
+        print("\n## PLAN ##")
+        print( args.plan );
+        print("## PLAN ##\n")
+
+        if( autopilot ) {
+            accept_plan = "y";
+        } else {
+            accept_plan = await input("Do you want to continue with this plan? (y/n): ");
         }
-    );
+    }
 
     context.push( msg );
     context.push( response );
@@ -526,105 +558,74 @@ When you have executed all the operations needed for the original task, call ans
         fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
     }
 
+    const page = await start_browser();
     await do_next_step( page, context, response, [], null );
 
     browser.close();
 })();
 
 async function get_tabbable_elements( page, selector = "*" ) {
-    await page.setRequestInterception( true );
-    request_block = true;
-
-    await sleep( 1000 );
-
-    // i should focus on the first focusable item, but
-    // i don't know how to do that so i do this crap
-    page.keyboard.down("Shift");
-    for( let i = 0; i < 20; i++ ) {
-        page.keyboard.press("Tab");
-    }
-    page.keyboard.up("Shift");
-
     let tabbable_elements = [];
+    let skipped = [];
     let id = 0;
 
-    tabbable_elements.push(
-        await get_next_tab( page, ++id, selector )
-    );
-
     await page.evaluate(() => {
-        document.activeElement.classList.add( "pgpt-first-element" );
+        window.scrollBy(0, 1000);
     });
 
-    tabbable_elements.push(
-        await get_next_tab( page, ++id, selector )
-    );
+    let elements = await page.$$('input:not([type=hidden]):not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"]), select:not([disabled]), a[href]:not([href="javascript:void(0)"]):not([href="#"])');
 
-    const limit = 100;
-    let elements_found = 0;
+    let limit = 400;
 
-    while( elements_found < limit ) {
-        elements_found++;
-
-        const first_element = await page.evaluate(() => {
-            return document.activeElement.classList.contains( "pgpt-first-element" );
-        });
-
-        if( first_element ) {
-            break
+    for( const element of elements ) {
+        if( --limit < 0 ) {
+            break;
         }
 
-        const next_tab = await get_next_tab( page, ++id, selector );
+        const next_tab = await get_next_tab( page, element, ++id, selector );
 
         if( next_tab !== false ) {
             tabbable_elements.push( next_tab );
-        } else {
-            id--;
         }
     }
 
-    tabbable_elements = tabbable_elements.filter( (element) => {
-        return !!element;
-    } );
+    if( debug ) {
+        fs.writeFileSync( "skipped.json", JSON.stringify( skipped, null, 2 ) );
+    }
 
     if( debug ) {
         fs.writeFileSync( "tabbable.json", JSON.stringify( tabbable_elements, null, 2 ) );
     }
 
-    request_block = false;
-    await page.setRequestInterception( false );
-
     return tabbable_elements;
 }
 
-async function get_next_tab( page, id, selector = "*" ) {
-    await page.keyboard.press("Tab");
-
-    let obj = await page.evaluate(async (id, selector) => {
-        if( ! document.activeElement.matches( selector ) ) {
+async function get_next_tab( page, element, id, selector = "*" ) {
+    let obj = await page.evaluate(async (element, id, selector) => {
+        if( ! element.matches( selector ) ) {
             return false;
         }
 
-        const tagName = document.activeElement.tagName;
+        const tagName = element.tagName;
 
         if( tagName === "BODY" ) {
             return false;
         }
 
-        let textContent = document.activeElement.textContent.replace(/\s+/g, ' ').trim();
+        let textContent = element.textContent.replace(/\s+/g, ' ').trim();
 
-        if( textContent === "" && ! document.activeElement.matches( "select, input, textarea" ) ) {
+        if( textContent === "" && ! element.matches( "select, input, textarea" ) ) {
             return false;
         }
 
-        document.activeElement.classList.add("pgpt-element"+id);
+        element.classList.add("pgpt-element"+id);
 
-        let role = document.activeElement.role;
-        let placeholder = document.activeElement.placeholder;
-        let title = document.activeElement.title;
-        let type = document.activeElement.type;
-        let href = document.activeElement.href;
-        let value = document.activeElement.value;
+        let role = element.role;
+        let placeholder = element.placeholder;
+        let title = element.title;
+        let type = element.type;
+        let href = element.href;
+        let value = element.value;
 
         if( href && href.length > 32 ) {
             href = href.substring( 0, 32 ) + "[..]";
@@ -663,27 +664,22 @@ async function get_next_tab( page, id, selector = "*" ) {
         }
 
         return obj;
-    }, id, selector);
+    }, element, id, selector);
 
     if( ! obj ) {
         return false;
     }
 
-    await page.keyboard.down("Shift");
-    await page.keyboard.press("Tab");
-    await page.keyboard.up("Shift");
-
-    const visible = await page.evaluate( (id) => {
+    const visible = await page.evaluate( async (id) => {
         const element = document.querySelector(".pgpt-element"+id);
 
         if( ! element ) {
             return false;
         }
 
-        const styles = window.getComputedStyle( element );
-        const visibility = styles.getPropertyValue( 'visibility' );
-        const display = styles.getPropertyValue( 'display' );
-        const clip = styles.getPropertyValue( 'clip' );
+        const visibility = element.style.visibility;
+        const display = element.style.display;
+        const clip = element.style.clip;
         const rect = element.getBoundingClientRect();
 
         return (
@@ -695,8 +691,6 @@ async function get_next_tab( page, id, selector = "*" ) {
             clip !== "rect(0px, 0px, 0px, 0px)"
         );
     }, id );
-
-    await page.keyboard.press("Tab");
 
     if( ! visible ) {
         return false;
@@ -786,20 +780,15 @@ async function get_page_content( page ) {
     return "## START OF PAGE CONTENT ##\nTitle: " + title + "\n\n" + ugly_chowder( html ) + "\n## END OF PAGE CONTENT ##";
 }
 
-async function wait_for_navigation() {
-    await sleep( 500 );
-
-    if( page_loaded === true ) {
-        return false;
+async function wait_for_navigation( page ) {
+    try {
+        await page.waitForNavigation({
+            timeout: navigation_timeout,
+            waitUntil: wait_until,
+        });
+    } catch( error ) {
+        print("NOTICE: Giving up on waiting for navigation");
     }
-
-    let wait_time = 0;
-    while( page_loaded === false && wait_time < navigation_timeout ) {
-        await sleep( 500 );
-        wait_time += 500;
-    }
-
-    return true;
 }
 
 async function do_next_step( page, context, next_step, links_and_inputs, element ) {
@@ -852,8 +841,6 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                     waitUntil: wait_until
                 } );
 
-                await sleep( 2000 );
-
                 url = await page.url();
 
                 message = `You are now on ${url}`;
@@ -866,41 +853,55 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
             links_and_inputs = await get_tabbable_elements( page );
         } else if( function_name === "click_link" ) {
             let link_id = func_arguments.pgpt_id;
+            let link_text = func_arguments.text;
 
-            const link = links_and_inputs.find( elem => elem && elem.id == link_id );
-
-            try {
-                print( task_prefix + `Clicking link "${link.text}"` );
-
-                request_count = 0;
-                response_count = 0;
-                download_started = false;
-
-                await Promise.race([
-                    page.click( ".pgpt-element" + link_id ),
-                    new Promise((resolve, reject) => {
-                      setTimeout(() => reject(new Error('Click operation timed out')), 5000);
-                    }),
-                ]);
-
-                await sleep( 2000 );
-                await wait_for_navigation();
-                await sleep( 2000 );
-
-                if( download_started ) {
-                    download_started = false;
-                    message = "Link clicked and file download started successfully!";
-                    no_content = true;
-                } else {
-                    message = "Link clicked! You are now on " + url;
+            if( ! link_id ) {
+                message = "ERROR: Missing parameter pgpt_id";
+            } else if( ! link_text ) {
+                message = "";
+                context.pop();
+                msg = {
+                    "role": "user",
+                    "content": "Please the correct link on the page. Remember to set both the text and the pgpt_id parameter."
                 }
-            } catch( error ) {
-                if( error instanceof TimeoutError ) {
-                    message = "NOTICE: The click did not cause a navigation.";
-                } else {
-                    let link_text = link ? link.text : "";
+            } else {
+                const link = links_and_inputs.find( elem => elem && elem.id == link_id );
 
-                    message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url".`
+                try {
+                    print( task_prefix + `Clicking link "${link.text}"` );
+
+                    request_count = 0;
+                    response_count = 0;
+                    download_started = false;
+
+                    if( ! page.$(".pgpt-element" + link_id) ) {
+                        throw new Error( "Element not found" );
+                    }
+
+                    page.click( ".pgpt-element" + link_id );
+
+                    await wait_for_navigation(page);
+
+                    let url = await page.url();
+
+                    if( download_started ) {
+                        download_started = false;
+                        message = "Link clicked and file download started successfully!";
+                        no_content = true;
+                    } else {
+                        message = "Link clicked! You are now on " + url;
+                    }
+                } catch( error ) {
+                    if( debug ) {
+                        print( error );
+                    }
+                    if( error instanceof TimeoutError ) {
+                        message = "NOTICE: The click did not cause a navigation.";
+                    } else {
+                        let link_text = link ? link.text : "";
+
+                        message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url".`
+                    }
                 }
             }
 
@@ -916,18 +917,30 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                 message = "";
 
                 try {
-                    const input = links_and_inputs.find( elem => elem && elem.id == element_id );
                     element = await page.$(".pgpt-element"+element_id);
+
                     const name = await element.evaluate( el => {
                         return el.getAttribute( "name" );
                     } );
 
-                    await element.type( text );
+                    const type = await element.evaluate( el => {
+                        return el.getAttribute( "type" );
+                    } );
 
-                    let sanitized = text.replace("\n", " ");
-                    print( task_prefix + `Typing "${sanitized}" to ${name}` );
+                    const tagName = await element.evaluate( el => {
+                        return el.tagName;
+                    } );
 
-                    message += `Typed "${text}" to input field "${name}"\n`;
+                    // ChatGPT sometimes tries to type empty string
+                    // to buttons to click them
+                    if( tagName === "BUTTON" || type === "submit" || type === "button" ) {
+                        func_arguments.submit = true;
+                    } else {
+                        await element.type( text );
+                        let sanitized = text.replace("\n", " ");
+                        print( task_prefix + `Typing "${sanitized}" to ${name}` );
+                        message += `Typed "${text}" to input field "${name}"\n`;
+                    }
                 } catch( error ) {
                     if( debug ) {
                         print(error);
@@ -945,9 +958,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
                     );
 
                     await form.evaluate(form => form.submit());
-                    await sleep( 2000 );
-                    await wait_for_navigation()
-                    await sleep( 2000 );
+                    await wait_for_navigation(page)
 
                     let url = await page.url();
 
@@ -984,7 +995,7 @@ async function do_next_step( page, context, next_step, links_and_inputs, element
         }
 
         message = message.substring( 0, context_length_limit );
-        msg = {
+        msg = msg ?? {
             "role": "function",
             "name": function_name,
             "content": JSON.stringify({
