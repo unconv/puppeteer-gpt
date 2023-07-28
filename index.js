@@ -33,6 +33,11 @@ if( in_array( "--headless", process.argv ) ) {
     headless = (process.argv[parseInt(process.argv.indexOf("--headless"))+1] ?? "true") !== "false";
 }
 
+let task_prefix = "";
+if( autopilot ) {
+    task_prefix = "<!_TASK_!>";
+}
+
 let token_usage = {
     "prompt_tokens": 0,
     "completion_tokens": 0,
@@ -143,6 +148,7 @@ function good_html( html ) {
         '[role="main"]',
         '#bodyContent',
         '#search',
+        '#searchform',
         '.kp-header',
     ];
 
@@ -157,54 +163,54 @@ function good_html( html ) {
 }
 
 function ugly_chowder( html ) {
-    let $ = good_html( html );
+    const $ = good_html( '<body>'+html+'</body>' );
 
-    let simpledata = "";
+    function traverse( element ) {
+        let output = "";
+        let children = element.children;
 
-    const important = [
-        ".kp-header",
-        "#search",
-    ];
-
-    // always get textcontent of important stuff
-    important.forEach((im) => {
-        $(im).each((i, el) => {
-            simpledata += $(el).text() + "\n\n";
-        });
-    });
-
-    const allowed_tags = [
-        "h1",
-        "h2",
-        "h3",
-        "p",
-        "time",
-        "article",
-        "a",
-        "ul",
-        "ol",
-        "li",
-    ];
-
-    const allowed_attrs = [
-        "datetime",
-        "data-testid",
-    ];
-
-    $('*').each((i, el) => {
-        const tag = $(el).prop('name');
-
-        if( in_array( tag, allowed_tags ) ) {
-            const text = $(el).text().replace(/[\s\n]+/g, ' ') + " ";
-            const attrs = $(el).attr();
-            const attrString = Object.keys(attrs).map(key => {
-                return in_array( key, allowed_attrs ) ? ` ${key}="${attrs[key]}"` : '';
-            }).join('');
-            simpledata += ` <${tag}${attrString}>${text}`;
+        if( $(element).is("h1, h2, h3, h4, h5, h6") ) {
+            output += "<" + element.name + ">";
         }
-    });
 
-    return simpledata;
+        if( $(element).is("form") ) {
+            output += "\n<" + element.name + ">\n";
+        }
+
+        if( $(element).is("div, section, main") ) {
+            output += "\n";
+        }
+
+        let the_tag = make_tag( element );
+
+        if( $(element).attr( "pgpt-id" ) ) {
+            output += " " + (the_tag.tag ? the_tag.tag : "");
+        } else if( element.type === "text" && ! $(element.parent).attr("pgpt-id") ) {
+            output += " " + element.data.trim();
+        }
+
+        if( children ) {
+            children.forEach( child => {
+                output += traverse( child );
+            } );
+        }
+
+        if( $(element).is("h1, h2, h3, h4, h5, h6") ) {
+            output += "</" + element.name + ">";
+        }
+
+        if( $(element).is("form") ) {
+            output += "\n</" + element.name + ">\n";
+        }
+
+        if( $(element).is("h1, h2, h3, h4, h5, h6, div, section, main") ) {
+            output += "\n";
+        }
+
+        return output.replace(/[^\S\n]+/g, " ").replace(/ \n+/g, "\n").replace(/[\n]+/g, "\n");
+    }
+
+    return traverse( $('body')[0] );
 };
 
 function redact_messages( messages ) {
@@ -215,7 +221,7 @@ function redact_messages( messages ) {
         let msg = JSON.parse( JSON.stringify( message ) );
 
         if( msg.url != current_url ) {
-            msg.content = msg.redacted ?? msg.content ?? "";
+            //msg.content = msg.redacted ?? msg.content ?? "";
         }
 
         delete msg.redacted;
@@ -226,7 +232,7 @@ function redact_messages( messages ) {
 
     if( debug ) {
         fs.writeFileSync(
-            "context_redacted.json",
+            "context_redacted"+redacted_messages.length+".json",
             JSON.stringify( redacted_messages, null, 2 )
         );
     }
@@ -250,7 +256,7 @@ async function send_chat_message(
     let definitions = [
         {
             "name": "make_plan",
-            "description": "Create a plan to accomplish the given task",
+            "description": "Create a plan to accomplish the given task. Summarize what the user's task is in a step by step manner. How would you browse the internet to accomplish the task.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -264,7 +270,7 @@ async function send_chat_message(
         },
         {
             "name": "read_file",
-            "description": "Read the contents of a file",
+            "description": "Read the contents of a file that the user has provided to you",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -278,7 +284,7 @@ async function send_chat_message(
         },
         {
             "name": "goto_url",
-            "description": "Goes to a specific URL",
+            "description": "Goes to a specific URL and gets the content",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -286,119 +292,63 @@ async function send_chat_message(
                         "type": "string",
                         "description": "The URL to go to (including protocol)"
                     },
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function and what exactly you will do."
-                    },
                 }
             },
-            "required": ["url", "reasoning"]
-        },
-        {
-            "name": "list_links",
-            "description": "Gets a list of the links on the current page",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
-                    }
-                }
-            },
-            "required": ["reasoning"]
-        },
-        {
-            "name": "list_inputs",
-            "description": "Gets a list of the input fields on the current page",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
-                    }
-                }
-            },
-            "required": ["reasoning"]
+            "required": ["url"]
         },
         {
             "name": "click_link",
-            "description": "Clicks a specific link on the page (list_links must be called first)",
+            "description": "Clicks a specific link on the page",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
-                    },
-                    "link_id": {
+                    "pgpt_id": {
                         "type": "number",
-                        "description": "The ID number of the link to click"
+                        "description": "The pgpt-id of the link to click (from the page content)"
                     }
                 }
             },
-            "required": ["reasoning", "link_id"]
+            "required": ["pgpt_id"]
         },
         {
             "name": "type_text",
-            "description": "Types some text to an input field (list_inputs must be called first)",
+            "description": "Types text to input fields and optionally submit the form",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
+                    "form_data": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "pgpt_id": {
+                                    "type": "number",
+                                    "description": "The pgpt-id attribute of the input to type into (from the page content)"
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "The text to type"
+                                }
+                            }
+                        }
                     },
-                    "input_id": {
-                        "type": "number",
-                        "description": "The ID number of the input to type into"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "The text to type"
+                    "submit": {
+                        "type": "boolean",
+                        "description": "Whether to submit the form after filling the fields"
                     }
                 }
             },
-            "required": ["reasoning", "input_id", "text"]
-        },
-        {
-            "name": "send_form",
-            "description": "Sends the form that the last filled input field belongs to",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
-                    }
-                }
-            },
-            "required": ["reasoning"]
-        },
-        {
-            "name": "get_content",
-            "description": "Gets the text content on the current page",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Explanation on why you would like to run this function."
-                    }
-                }
-            },
-            "required": ["reasoning"]
+            "required": ["form_data"]
         },
         {
             "name": "answer_user",
-            "description": "Give an answer to the user and end the navigation. Use when the given task has been completed",
+            "description": "Give an answer to the user and end the navigation. Use when the given task has been completed. Summarize the relevant parts of the page content first and give an answer to the user based on that.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "reasoning": {
+                    "summary": {
                         "type": "string",
-                        "description": "Explain your chain of thought for figuring out the answer"
+                        "description": "A summary of the relevant parts of the page content that you base the answer on"
                     },
                     "answer": {
                         "type": "string",
@@ -406,21 +356,7 @@ async function send_chat_message(
                     }
                 }
             },
-            "required": ["answer"]
-        },
-        {
-            "name": "list_relevant_parts",
-            "description": "List relevant parts of the page content",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "A summary of the relevant information"
-                    }
-                }
-            },
-            "required": ["summary"]
+            "required": ["summary", "answer"]
         },
     ];
 
@@ -430,6 +366,7 @@ async function send_chat_message(
         } );
     }
 
+    print( task_prefix + "Sending ChatGPT request..." );
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -485,21 +422,37 @@ async function sleep( ms, print_debug = true ) {
     return new Promise( (resolve) => setTimeout( resolve, ms ) );
 }
 
+let download_started = false;
 let page_loaded = false;
 let request_count = 0;
+let request_block = false;
+let response_count = 0;
 
 (async () => {
     const browser = await puppeteer.launch({
         headless: headless ? "new" : false,
-        defaultViewport: {
-            width: 1920,
-            height: 1200,
-        }
     });
 
     const page = await browser.newPage();
 
-    page.on( 'request', () => {
+    await page.setViewport( {
+        width: 1920,
+        height: 1200,
+        deviceScaleFactor: 1,
+    } );
+
+    page.on( 'request', request => {
+        if( request_block ) {
+            if( request.isNavigationRequest() ) {
+                request.respond({
+                    status: 200,
+                    contentType: 'application/octet-stream',
+                    body: 'Dummy file to block navigation',
+                });
+            } else {
+                request.continue();
+            }
+        }
         request_count++;
     } );
 
@@ -523,14 +476,35 @@ let request_count = 0;
         }
     } );
 
+    page.on( 'response', async response => {
+        response_count++;
+        let headers = response.headers();
+        if( (headers['content-disposition']?.includes("attachment") || headers['content-length'] > 1024*1024 || headers['content-type'] === "application/octet-stream") ) {
+            setTimeout( function() {
+                if( response_count == 1 ) {
+                    print("DOWNLOAD: A file download has been detected");
+                    download_started = true;
+                }
+            }, 2000 );
+        }
+    } );
+
     let context = [
         {
             "role": "system",
-            "content": `You have been tasked with crawling the internet based on a task given by the user. You are connected to a Puppeteer script that can navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. If you encounter a Page Not Found error, try another URL or try going to the front page of the site and navigating from there. If the page doesn't have the content you want, try clicking on a link or navigating to a completely different page. You must list the links or the inputs first before you can click on them or input into them.`
+            "content": `
+## OBJECTIVE ##
+You have been tasked with crawling the internet based on a task given by the user. You are connected to a web browser which you can control via function calls to navigate to pages and list elements on the page. You can also type into search boxes and other input fields and send forms. You can also click links on the page. You will behave as a human browsing the web.
+
+## NOTES ##
+You will try to navigate directly to the most relevant web address. If you were given a URL, go to it directly. If you encounter a Page Not Found error, try another URL. If multiple URLs don't work, you are probably using an outdated version of the URL scheme of that website. In that case, try navigating to their front page and using their search bar or try navigating to the right place with links.
+
+## WHEN TASK IS FINISHED ##
+When you have executed all the operations needed for the original task, call answer_user to give a response to the user.`.trim()
         }
     ];
 
-    let message = `Task: ${the_prompt}. Start by navigating to a website`;
+    let message = `Task: ${the_prompt}.`;
     let msg = {
         role: "user",
         content: message
@@ -545,20 +519,32 @@ let request_count = 0;
         }
     );
 
-    context.push(msg);
-
-    context.push(response);
+    context.push( msg );
+    context.push( response );
 
     if( debug ) {
         fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
     }
 
-    await do_next_step( page, context, response, [], [], null );
+    await do_next_step( page, context, response, [], null );
 
     browser.close();
 })();
 
 async function get_tabbable_elements( page, selector = "*" ) {
+    await page.setRequestInterception( true );
+    request_block = true;
+
+    await sleep( 1000 );
+
+    // i should focus on the first focusable item, but
+    // i don't know how to do that so i do this crap
+    page.keyboard.down("Shift");
+    for( let i = 0; i < 20; i++ ) {
+        page.keyboard.press("Tab");
+    }
+    page.keyboard.up("Shift");
+
     let tabbable_elements = [];
     let id = 0;
 
@@ -574,7 +560,7 @@ async function get_tabbable_elements( page, selector = "*" ) {
         await get_next_tab( page, ++id, selector )
     );
 
-    const limit = 200;
+    const limit = 100;
     let elements_found = 0;
 
     while( elements_found < limit ) {
@@ -597,19 +583,22 @@ async function get_tabbable_elements( page, selector = "*" ) {
         }
     }
 
-    return tabbable_elements.filter( (element) => {
-        return element;
+    tabbable_elements = tabbable_elements.filter( (element) => {
+        return !!element;
     } );
+
+    if( debug ) {
+        fs.writeFileSync( "tabbable.json", JSON.stringify( tabbable_elements, null, 2 ) );
+    }
+
+    request_block = false;
+    await page.setRequestInterception( false );
+
+    return tabbable_elements;
 }
 
 async function get_next_tab( page, id, selector = "*" ) {
     await page.keyboard.press("Tab");
-
-    await sleep( 5, false );
-
-    let element = await page.evaluateHandle(() => {
-        return document.activeElement;
-    })
 
     let obj = await page.evaluate(async (id, selector) => {
         if( ! document.activeElement.matches( selector ) ) {
@@ -628,6 +617,8 @@ async function get_next_tab( page, id, selector = "*" ) {
             return false;
         }
 
+        document.activeElement.classList.add("pgpt-element"+id);
+
         let role = document.activeElement.role;
         let placeholder = document.activeElement.placeholder;
         let title = document.activeElement.title;
@@ -635,16 +626,16 @@ async function get_next_tab( page, id, selector = "*" ) {
         let href = document.activeElement.href;
         let value = document.activeElement.value;
 
-        if( href && href.length > 42 ) {
-            href = href.substring( 0, 42 ) + "[..]";
+        if( href && href.length > 32 ) {
+            href = href.substring( 0, 32 ) + "[..]";
         }
 
-        if( placeholder && placeholder.length > 42 ) {
-            placeholder = placeholder.substring( 0, 42 ) + "[..]";
+        if( placeholder && placeholder.length > 32 ) {
+            placeholder = placeholder.substring( 0, 32 ) + "[..]";
         }
 
-        if( title && title.length > 42 ) {
-            title = title.substring( 0, 42 ) + "[..]";
+        if( ! textContent && title && title.length > 32 ) {
+            title = title.substring( 0, 32 ) + "[..]";
         }
 
         if( textContent && textContent.length > 200 ) {
@@ -678,13 +669,17 @@ async function get_next_tab( page, id, selector = "*" ) {
         return false;
     }
 
-    obj.element = element;
-
     await page.keyboard.down("Shift");
     await page.keyboard.press("Tab");
     await page.keyboard.up("Shift");
 
-    const visible = await page.evaluate( async (element) => {
+    const visible = await page.evaluate( (id) => {
+        const element = document.querySelector(".pgpt-element"+id);
+
+        if( ! element ) {
+            return false;
+        }
+
         const styles = window.getComputedStyle( element );
         const visibility = styles.getPropertyValue( 'visibility' );
         const display = styles.getPropertyValue( 'display' );
@@ -699,128 +694,74 @@ async function get_next_tab( page, id, selector = "*" ) {
             clip !== "rect(1px, 1px, 1px, 1px)" &&
             clip !== "rect(0px, 0px, 0px, 0px)"
         );
-    }, element );
+    }, id );
 
     await page.keyboard.press("Tab");
 
     if( ! visible ) {
         return false;
+    } else {
+        await page.evaluate( async (id) => {
+            const element = document.querySelector( ".pgpt-element"+id );
+            element.setAttribute( "pgpt-id", id );
+            element.style.border="1px solid red";
+        }, id );
     }
 
     return obj;
 }
 
-async function list_links( page ) {
-    return get_tabbable_elements( page, 'a, button, [role="tab"]' );
+function make_tag(element) {
+    const $ = cheerio;
 
-    const clickableElements = await page.$$('a, button, [role="tab"]');
+    let textContent = $(element).text().replace(/\s+/g, ' ').trim();
+    let placeholder = $(element).attr( "placeholder" );
+    let tagName = element.name;
+    let title = $(element).attr( "title" );
+    let value = $(element).attr( "value" );
+    let role = $(element).attr( "role" );
+    let type = $(element).attr( "type" );
+    let href = $(element).attr( "href" );
+    let pgpt_id = $(element).attr( "pgpt-id" );
 
-    let links = [];
-    let nav_links = [];
-    let important_links = [];
-    let number = 0;
-
-    let important = [
-        '#search',
-    ];
-
-    for (const element of clickableElements) {
-        number++;
-
-        const href = await element.evaluate( (e) => e.href );
-        let textContent = await element.evaluate( (e) => e.textContent );
-        textContent = textContent.replace(/\n/g, '').trim();
-
-        let duplicate_link = links.find( elem => {
-            elem.text == textContent && href && elem.href == href
-        } );
-
-        if( textContent && ! duplicate_link ) {
-            let link = {
-                id: number,
-                element: element,
-                text: textContent,
-                url: href,
-            }
-
-            const is_in_nav = await element.evaluate( (node) => {
-                const closest_nav = node.closest('nav');
-                return closest_nav !== null;
-            } );
-
-            let is_important = false;
-
-            for( const selector of important ) {
-                const in_selector = await element.evaluate( (node, selector) => {
-                    const closest_element = node.closest( selector );
-                    return closest_element !== null;
-                }, selector );
-
-                if( in_selector ) {
-                    is_important = true;
-                }
-            };
-
-            if( is_important ) {
-                important_links.push( link );
-            } else if( is_in_nav ) {
-                nav_links.push( link );
-            } else {
-                links.push( link );
-            }
-        }
+    if( href && href.length > 32 ) {
+        href = href.substring( 0, 32 ) + "[..]";
     }
 
-    return [...important_links, ...links, ...nav_links];
-}
-
-async function list_inputs( page ) {
-    return get_tabbable_elements( page, 'select, input, textarea' );
-
-    const clickableElements = await page.$$('input, textarea');
-
-    let inputs = [];
-    let number = 0;
-
-    for (const element of clickableElements) {
-        const type = await element.evaluate( (e) => e.type );
-        const name = await element.evaluate( (e) => e.name );
-        const role = await element.evaluate( (e) => e.role );
-        const placeholder = await element.evaluate( (e) => e.placeholder );
-        const title = await element.evaluate( (e) => e.title );
-
-        let text = "";
-
-        if( name && type != "hidden" && type != "file" ) {
-            number++;
-            text += name;
-
-            let input = {
-                text: text,
-                type: type,
-                id: number,
-                element: element,
-            }
-
-            if( role ) { input.role = role; }
-            if( placeholder ) { input.placeholder = placeholder; }
-            if( title ) { input.title = title; }
-
-            inputs.push( input );
-        }
+    if( placeholder && placeholder.length > 32 ) {
+        placeholder = placeholder.substring( 0, 32 ) + "[..]";
     }
 
-    return inputs;
-}
-
-function list_for_gpt( list, what ) {
-    let formatted = JSON.parse( JSON.stringify( list ) );
-
-    for( const element of formatted ) {
-        delete element.element;
+    if( title && title.length > 32) {
+        title = title.substring( 0, 32 ) + "[..]";
     }
 
-    return JSON.stringify( formatted, null, 2 );
+    if( textContent && textContent.length > 200 ) {
+        textContent = textContent.substring( 0, 200 ) + "[..]";
+    }
+
+    let tag = `<${tagName}`;
+
+    if( href ) { tag += ` href="${href}"`; }
+    if( type ) { tag += ` type="${type}"`; }
+    if( placeholder ) { tag += ` placeholder="${placeholder}"`; }
+    if( title ) { tag += ` title="${title}"`; }
+    if( role ) { tag += ` role="${role}"`; }
+    if( value ) { tag += ` value="${value}"`; }
+    if( pgpt_id ) { tag += ` pgpt-id="${pgpt_id}"`; }
+
+    tag += `>`;
+
+    let obj = {
+        tag: tag,
+    };
+
+    if( textContent ) {
+        obj.text = textContent;
+        obj.tag += `${textContent}</${tagName}>`;
+    }
+
+    return obj;
 }
 
 function check_download_error( error ) {
@@ -831,6 +772,18 @@ function check_download_error( error ) {
     }
 
     return null;
+}
+
+async function get_page_content( page ) {
+    const title = await page.evaluate(() => {
+        return document.title;
+    });
+
+    const html = await page.evaluate(() => {
+        return document.body.innerHTML;
+    });
+
+    return "## START OF PAGE CONTENT ##\nTitle: " + title + "\n\n" + ugly_chowder( html ) + "\n## END OF PAGE CONTENT ##";
 }
 
 async function wait_for_navigation() {
@@ -849,15 +802,10 @@ async function wait_for_navigation() {
     return true;
 }
 
-async function do_next_step( page, context, next_step, links, inputs, element ) {
+async function do_next_step( page, context, next_step, links_and_inputs, element ) {
     let message;
     let msg;
-    let redacted_message;
-
-    let task_prefix = "";
-    if( autopilot ) {
-        task_prefix = "<!_TASK_!>";
-    }
+    let no_content = false;
 
     if( next_step.hasOwnProperty( "function_call" ) ) {
         let function_call = next_step.function_call;
@@ -874,19 +822,26 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
             }
         }
 
-        if( function_name === "list_relevant_parts" ) {
-            message = "OK. Continue by answering the user or by other functions";
-        } else if( function_name === "make_plan" ) {
+        if( function_name === "make_plan" ) {
             message = "OK. Please continue according to the plan";
         } else if( function_name === "read_file" ) {
             let filename = func_arguments.filename;
 
-            print( task_prefix + "Reading file " + filename );
+            if( autopilot || await input( "\nGPT: I want to read the file " + filename + "\nDo you allow this? (y/n): " ) == "y" ) {
+                print()
+                print( task_prefix + "Reading file " + filename );
 
-            let file_data = fs.readFileSync( filename, 'utf-8' );
-            file_data = file_data.substring( 0, context_length_limit );
-
-            message = file_data;
+                if( fs.existsSync( filename ) ) {
+                    let file_data = fs.readFileSync( filename, 'utf-8' );
+                    file_data = file_data.substring( 0, context_length_limit );
+                    message = file_data;
+                } else {
+                    message = "ERROR: That file does not exist";
+                }
+            } else {
+                print()
+                message = "ERROR: You are not allowed to read this file";
+            }
         } else if( function_name === "goto_url" ) {
             let url = func_arguments.url;
 
@@ -901,160 +856,119 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
 
                 url = await page.url();
 
-                links = false;
-
-                message = `Navigated to ${url}`
+                message = `You are now on ${url}`;
             } catch( error ) {
                 message = check_download_error( error );
                 message = message ?? "There was an error going to the URL";
             }
-        } else if( function_name === "list_links" ) {
-            print( task_prefix + "Listing links" );
 
-            let url = await page.url();
-
-            links = await list_links( page );
-            let links_for_gpt = list_for_gpt( links, "Link" );
-            if( links.length ) {
-                message = `Here is the list of links on the page. Call "click_link" with the ID number of a link if you want to click it.\n\nRemember your task: ${the_prompt}\n\nRemember you have already navigated to ${url}`;
-            } else {
-                message = "There are no links on the page.";
-            }
-            redacted_message = message;
-            message += "\n\n" + links_for_gpt;
-            if( links.length ) {
-                redacted_message += "\n\n<list redacted>";
-            }
-        } else if( function_name === "list_inputs" ) {
-            print( task_prefix + "Listing inputs" );
-
-            inputs = await list_inputs( page );
-            let inputs_for_gpt = list_for_gpt( inputs, "input" );
-            if( inputs.length ) {
-                message = `Here is the list of inputs on the page. Please call "type_text" with the ID number of the input field and the text to type, if you want to fill in the form.`;
-            } else {
-                message = `There are no inputs on the page.`;
-            }
-            redacted_message = message;
-            message += "\n\n" + inputs_for_gpt;
-            if( inputs.length ) {
-                redacted_message += "\n\n<list redacted>";
-            }
+            print( task_prefix + "Scraping page..." );
+            links_and_inputs = await get_tabbable_elements( page );
         } else if( function_name === "click_link" ) {
-            let link_id = func_arguments.link_id;
+            let link_id = func_arguments.pgpt_id;
 
-            if( links === false ) {
-                message = "ERROR: You must first list the links to get the IDs";
-            } else {
-                const link = links.find( elem => elem.id == link_id );
+            const link = links_and_inputs.find( elem => elem && elem.id == link_id );
+
+            try {
+                print( task_prefix + `Clicking link "${link.text}"` );
+
+                request_count = 0;
+                response_count = 0;
+                download_started = false;
+
+                await Promise.race([
+                    page.click( ".pgpt-element" + link_id ),
+                    new Promise((resolve, reject) => {
+                      setTimeout(() => reject(new Error('Click operation timed out')), 5000);
+                    }),
+                ]);
+
+                await sleep( 2000 );
+                await wait_for_navigation();
+                await sleep( 2000 );
+
+                if( download_started ) {
+                    download_started = false;
+                    message = "Link clicked and file download started successfully!";
+                    no_content = true;
+                } else {
+                    message = "Link clicked! You are now on " + url;
+                }
+            } catch( error ) {
+                if( error instanceof TimeoutError ) {
+                    message = "NOTICE: The click did not cause a navigation.";
+                } else {
+                    let link_text = link ? link.text : "";
+
+                    message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url".`
+                }
+            }
+
+            print( task_prefix + "Scraping page..." );
+            links_and_inputs = await get_tabbable_elements( page );
+        } else if( function_name === "type_text" ) {
+            let form_data = func_arguments.form_data;
+
+            for( let data of form_data ) {
+                let element_id = data.pgpt_id;
+                let text = data.text;
+
+                message = "";
 
                 try {
-                    element = link.element;
+                    const input = links_and_inputs.find( elem => elem && elem.id == element_id );
+                    element = await page.$(".pgpt-element"+element_id);
+                    const name = await element.evaluate( el => {
+                        return el.getAttribute( "name" );
+                    } );
 
-                    print( task_prefix + `Clicking link "${link.text}"` );
+                    await element.type( text );
 
-                    request_count = 0;
-                    await element.click();
+                    let sanitized = text.replace("\n", " ");
+                    print( task_prefix + `Typing "${sanitized}" to ${name}` );
+
+                    message += `Typed "${text}" to input field "${name}"\n`;
+                } catch( error ) {
+                    if( debug ) {
+                        print(error);
+                    }
+                    message += `Error typing "${text}" to input field ID ${data.element_id}\n`;
+                }
+            }
+
+            if( func_arguments.submit ) {
+                print( task_prefix + `Submitting form` );
+
+                try {
+                    const form = await element.evaluateHandle(
+                        input => input.closest('form')
+                    );
+
+                    await form.evaluate(form => form.submit());
+                    await sleep( 2000 );
+                    await wait_for_navigation()
                     await sleep( 2000 );
 
-                    if( await wait_for_navigation() ) {
-                        await sleep( 2000 );
-                        let url = await page.url();
-                        message = `Navigated to ${url}`
-                    } else {
-                        message = "Link successfully clicked!";
-                        if( request_count > 0 ) {
-                            message += " If this was a download link, the download has been started to the Chrome default downloads folder.";
-                        }
-                    }
+                    let url = await page.url();
 
-                    links = false;
+                    message += `Form sent! You are now on ${url}\n`
                 } catch( error ) {
-                    if( error instanceof TimeoutError ) {
-                        message = "NOTICE: The click did not cause a navigation. If it was a download link, the file has been downloaded to the default Chrome download location.";
-                    } else {
-                        links = await list_links( page );
-                        let links_for_gpt = list_for_gpt( links, "link" );
-
-                        let link_text = link ? link.text : "";
-
-                        message = `Sorry, but link number ${link_id} (${link_text}) is not clickable, please select another link or another command. You can also try to go to the link URL directly with "goto_url". You can also call "get_content" to get the content of the page.`
-                        redacted_message = message;
-                        message += "\n\n" + links_for_gpt;
-                        redacted_message += "\n\n<list redacted>";
+                    if( debug ) {
+                        print( error );
                     }
+                    print( task_prefix + `Error submitting form` );
+                    message += "There was an error submitting the form.\n";
                 }
+
+                print( task_prefix + "Scraping page..." );
+                links_and_inputs = await get_tabbable_elements( page );
             }
-        } else if( function_name === "type_text" ) {
-            let element_id = func_arguments.input_id;
-            let text = func_arguments.text;
-
-            try {
-                const input = inputs.find( elem => elem.id == element_id );
-                const name = await input.element.evaluate( (e) => e.name );
-                element = input.element;
-
-                await element.type( text );
-
-                let sanitized = text.replace("\n", " ");
-                print( task_prefix + `Typing "${sanitized}" to ${name}` );
-
-                message = `OK. I typed "${text}" to the input box "${name}". What should I do next? Please call "send_form" if you want to submit the form.`;
-            } catch( error ) {
-                if( debug ) {
-                    print(error);
-                }
-                message = `Sorry, but there was an error with that command. Please try another command.`
-            }
-        } else if( function_name === "send_form" ) {
-            print( task_prefix + `Submitting form` );
-
-            try {
-                const form = await element.evaluateHandle(
-                    input => input.closest('form')
-                );
-
-                await form.evaluate(form => form.submit());
-
-                let navigated = "No navigation occured.";
-                if( await wait_for_navigation() ) {
-                    await sleep( 3000 );
-                    navigated = "";
-                }
-
-                let url = await page.url();
-
-                links = false;
-
-                message = `OK. I sent the form. I'm on ${url} now. ${navigated}`
-            } catch( error ) {
-                if( debug ) {
-                    print( error );
-                }
-                print( task_prefix + `Error submitting form` );
-                message = "There was an error submitting the form.";
-            }
-        } else if( function_name === "get_content" ) {
-            links = false;
-
-            print( task_prefix + "Getting page content" );
-
-            const title = await page.evaluate(() => {
-                return document.title;
-            });
-
-            const html = await page.evaluate(() => {
-                return document.body.innerHTML;
-            });
-
-            const page_content = ugly_chowder( html );
-
-            message = `Here's the current page content.`;
-            redacted_message = message;
-            message += `\n\n## CONTENT START ##\nTitle: ${title}\n\n${page_content}\n## CONTENT END ##\n\nIn your next response, list all parts of the above content that are relevant to the original prompt:\n\n${the_prompt}`;
-            redacted_message += "\n\n<content redacted>";
         } else if( function_name === "answer_user" ) {
             let text = func_arguments.answer;
+
+            if( ! text ) {
+                text = func_arguments.summary;
+            }
 
             print_current_cost();
 
@@ -1100,10 +1014,16 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         }
     }
 
-    msg.redacted = redacted_message;
+    if( no_content !== true ) {
+        const page_content = await get_page_content( page );
+        msg.content += "\n\n" + page_content.substring( 0, context_length_limit );
+    }
+
     msg.url = await page.url();
 
     next_step = await send_chat_message( msg, context );
+
+    msg.content = message,
 
     context.push( msg );
     context.push( next_step );
@@ -1112,5 +1032,5 @@ async function do_next_step( page, context, next_step, links, inputs, element ) 
         fs.writeFileSync( "context.json", JSON.stringify( context, null, 2 ) );
     }
 
-    await do_next_step( page, context, next_step, links, inputs, element );
+    await do_next_step( page, context, next_step, links_and_inputs, element );
 }
